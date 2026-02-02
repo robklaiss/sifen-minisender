@@ -25,7 +25,7 @@ DEFAULT_RECIBE_LOTE_ENDPOINTS = {
 }
 
 DEFAULT_CONSULTA_LOTE_WSDL = {
-    "test": "https://sifen-test.set.gov.py/de/ws/async/consulta-lote.wsdl",
+    "test": "https://sifen-test.set.gov.py/de/ws/consultas/consulta-lote.wsdl",
     "prod": "https://sifen.set.gov.py/de/ws/async/consulta-lote.wsdl",
 }
 
@@ -140,7 +140,7 @@ def _build_soap_envelope(did: str, xde_base64: str) -> bytes:
     etree.SubElement(envelope, etree.QName(SOAP12_NS, "Header"))
     body = etree.SubElement(envelope, etree.QName(SOAP12_NS, "Body"))
 
-    r_envio_lote = etree.Element(etree.QName(SIFEN_NS, "rEnvioLote"), nsmap={"xsd": SIFEN_NS})
+    r_envio_lote = etree.Element(etree.QName(SIFEN_NS, "rEnvioLote"), nsmap={None: SIFEN_NS})
     d_id = etree.SubElement(r_envio_lote, etree.QName(SIFEN_NS, "dId"))
     d_id.text = did
     x_de = etree.SubElement(r_envio_lote, etree.QName(SIFEN_NS, "xDE"))
@@ -195,37 +195,21 @@ def _get_consulta_lote_wsdl_and_endpoint(env: str) -> Tuple[str, str]:
     if env_norm not in ("test", "prod"):
         raise SystemExit(f"ERROR: env inválido para consulta-lote: {env!r} (usar test|prod)")
 
-    direct_endpoint = (os.getenv("SIFEN_CONSULTA_LOTE_ENDPOINT") or "").strip()
-    wsdl_env = (os.getenv("SIFEN_WSDL_CONSULTA_LOTE") or "").strip()
-
-    endpoint: Optional[str] = None
-    if direct_endpoint:
-        endpoint = _normalize_endpoint(direct_endpoint)
-
-    if wsdl_env:
-        wsdl_url = wsdl_env
-    elif direct_endpoint:
-        base = endpoint or _normalize_endpoint(direct_endpoint)
-        if "?" in base:
-            wsdl_url = base + "&wsdl"
-        else:
-            wsdl_url = base + "?wsdl"
+    if env_norm == "test":
+        host = "sifen-test.set.gov.py"
     else:
-        wsdl_url = DEFAULT_CONSULTA_LOTE_WSDL[env_norm]
+        host = "sifen.set.gov.py"
 
-    if endpoint is None:
-        endpoint = _normalize_endpoint(wsdl_url)
-        if wsdl_url.lower().endswith("?wsdl"):
-            endpoint = wsdl_url[: -len("?wsdl")]
-
-    return wsdl_url, endpoint
+    wsdl_url = f"https://{host}/de/ws/consultas/consulta-lote.wsdl?wsdl"
+    endpoint_cfg = f"https://{host}/de/ws/consultas/consulta-lote.wsdl"
+    return wsdl_url, endpoint_cfg
 
 
 def _analyze_consulta_lote_wsdl(wsdl_bytes: bytes):
     try:
         root = etree.fromstring(wsdl_bytes)
     except Exception as exc:
-        raise SystemExit(f"ERROR: no se pudo parsear WSDL de consulta-lote: {exc}")
+        raise RuntimeError(f"ERROR: no se pudo parsear WSDL de consulta-lote: {exc}")
 
     ns = {"wsdl": WSDL_NS, "soap12": SOAP12_BINDING_NS}
 
@@ -245,7 +229,7 @@ def _analyze_consulta_lote_wsdl(wsdl_bytes: bytes):
             candidates.append(op)
 
     if not candidates:
-        raise SystemExit(
+        raise RuntimeError(
             "ERROR: no se encontró operación de consulta de lote en WSDL (buscando nombre con 'Lote' y 'Result' o 'Cons')"
         )
 
@@ -254,10 +238,10 @@ def _analyze_consulta_lote_wsdl(wsdl_bytes: bytes):
 
     input_el = op.find(f"{{{WSDL_NS}}}input")
     if input_el is None:
-        raise SystemExit(f"ERROR: operación WSDL {op_name!r} no tiene wsdl:input")
+        raise RuntimeError(f"ERROR: operación WSDL {op_name!r} no tiene wsdl:input")
     message_qname = (input_el.get("message") or "").strip()
     if not message_qname:
-        raise SystemExit(f"ERROR: operación WSDL {op_name!r} tiene wsdl:input sin @message")
+        raise RuntimeError(f"ERROR: operación WSDL {op_name!r} tiene wsdl:input sin @message")
 
     if ":" in message_qname:
         _, msg_local = message_qname.split(":", 1)
@@ -266,15 +250,15 @@ def _analyze_consulta_lote_wsdl(wsdl_bytes: bytes):
 
     msgs = root.xpath(f"//wsdl:message[@name='{msg_local}']", namespaces=ns)
     if not msgs:
-        raise SystemExit(f"ERROR: no se encontró wsdl:message {msg_local!r} en WSDL")
+        raise RuntimeError(f"ERROR: no se encontró wsdl:message {msg_local!r} en WSDL")
     msg_el = msgs[0]
 
     part_el = msg_el.find(f"{{{WSDL_NS}}}part")
     if part_el is None:
-        raise SystemExit(f"ERROR: wsdl:message {msg_local!r} no tiene wsdl:part")
+        raise RuntimeError(f"ERROR: wsdl:message {msg_local!r} no tiene wsdl:part")
     element_qname = (part_el.get("element") or "").strip()
     if not element_qname:
-        raise SystemExit(f"ERROR: wsdl:part de message {msg_local!r} no tiene @element")
+        raise RuntimeError(f"ERROR: wsdl:part de message {msg_local!r} no tiene @element")
 
     if ":" in element_qname:
         prefix, local = element_qname.split(":", 1)
@@ -309,6 +293,23 @@ def _build_consulta_lote_soap_envelope(body_ns: str, body_localname: str, prot: 
     dprot = etree.SubElement(root, etree.QName(ns_for_body, "dProtConsLote"))
     dprot.text = prot
     body.append(root)
+    return etree.tostring(envelope, xml_declaration=True, encoding="UTF-8", pretty_print=False)
+
+
+def _build_consulta_lote_soap_fallback(prot: str) -> bytes:
+    did = _make_did_15()
+
+    envelope = etree.Element(etree.QName(SOAP12_NS, "Envelope"), nsmap={"soap": SOAP12_NS})
+    etree.SubElement(envelope, etree.QName(SOAP12_NS, "Header"))
+    body = etree.SubElement(envelope, etree.QName(SOAP12_NS, "Body"))
+
+    root = etree.Element(etree.QName(SIFEN_NS, "rEnviConsLoteDe"), nsmap={None: SIFEN_NS})
+    d_id = etree.SubElement(root, etree.QName(SIFEN_NS, "dId"))
+    d_id.text = did
+    dprot = etree.SubElement(root, etree.QName(SIFEN_NS, "dProtConsLote"))
+    dprot.text = prot
+    body.append(root)
+
     return etree.tostring(envelope, xml_declaration=True, encoding="UTF-8", pretty_print=False)
 
 
@@ -565,21 +566,58 @@ def consult(
         raise SystemExit("ERROR: --prot es requerido y no puede ser vacío")
 
     wsdl_url, endpoint_cfg = _get_consulta_lote_wsdl_and_endpoint(env_norm)
+    wsdl_bytes: bytes = b""
+    address_from_wsdl: Optional[str] = None
+    body_ns: Optional[str] = None
+    body_local: Optional[str] = None
+    soap_action: Optional[str] = None
+    op_name: Optional[str] = None
+    fallback_wsdl = False
+    wsdl_error: Optional[str] = None
 
-    try:
-        wsdl_resp = requests.get(wsdl_url, timeout=30)
-        wsdl_resp.raise_for_status()
-        wsdl_bytes = wsdl_resp.content
-    except Exception as exc:
-        raise SystemExit(f"ERROR: al descargar WSDL de consulta-lote {wsdl_url!r}: {exc}")
+    # mTLS: preparar cert/key antes de usarlo en GET del WSDL o POST
+    cert_path: Optional[str]
+    key_path: Optional[str]
+    if do_http:
+        cert_path, key_path = _get_mtls_cert()
+    else:
+        cert_path, key_path = None, None
 
-    address_from_wsdl, body_ns, body_local, soap_action, op_name = _analyze_consulta_lote_wsdl(wsdl_bytes)
+    if do_http:
+        try:
+            wsdl_resp = requests.get(
+                wsdl_url,
+                headers={
+                    # Algunos endpoints de SIFEN devuelven 200 con body vacío si falta UA/Accept.
+                    # Esto imita tu curl exitoso.
+                    "User-Agent": "curl/8.7.1",
+                    "Accept": "*/*",
+                    "Accept-Encoding": "identity",
+                },
+                timeout=30,
+                cert=(cert_path, key_path) if cert_path and key_path else None,
+            )
+            wsdl_resp.raise_for_status()
+            wsdl_bytes = wsdl_resp.content
+            address_from_wsdl, body_ns, body_local, soap_action, op_name = _analyze_consulta_lote_wsdl(wsdl_bytes)
+        except Exception as exc:
+            fallback_wsdl = True
+            wsdl_error = str(exc)
+            print(f"WARN consult fallback sin WSDL: {wsdl_url!r}: {exc}", file=sys.stderr)
 
-    endpoint = endpoint_cfg or address_from_wsdl or _normalize_endpoint(wsdl_url)
+    if fallback_wsdl or not wsdl_bytes:
+        soap_bytes = _build_consulta_lote_soap_fallback(prot_value)
+    else:
+        soap_bytes = _build_consulta_lote_soap_envelope(body_ns, body_local, prot_value)
+
+    endpoint_from_wsdl = address_from_wsdl
+    endpoint = endpoint_cfg or endpoint_from_wsdl or _normalize_endpoint(wsdl_url)
+    # FIX: nunca postear a un *.wsdl (SIFEN suele resetear). Convertir a endpoint real.
+    if endpoint.endswith(".wsdl"):
+        endpoint = endpoint[:-5]
+
     if not endpoint:
         raise SystemExit("ERROR: no se pudo determinar endpoint de consulta-lote")
-
-    soap_bytes = _build_consulta_lote_soap_envelope(body_ns, body_local, prot_value)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if artifacts_dir is not None:
@@ -597,30 +635,34 @@ def consult(
         "env": env_norm,
         "wsdl_url": wsdl_url,
         "endpoint": endpoint,
-        "endpoint_from_wsdl": address_from_wsdl,
+        "endpoint_from_wsdl": endpoint_from_wsdl,
         "soap_action": soap_action,
         "operation": op_name,
         "prot": prot_value,
         "soap_request_sha256": hashlib.sha256(soap_bytes).hexdigest(),
         "wsdl_sha256": hashlib.sha256(wsdl_bytes).hexdigest(),
+        "fallback_wsdl": fallback_wsdl,
     }
 
-    cert_path: Optional[str]
-    key_path: Optional[str]
+    if wsdl_error is not None:
+        meta["wsdl_fallback_error"] = wsdl_error
     if not do_http:
         meta["http_skipped"] = True
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
         return run_dir
 
-    cert_path, key_path = _get_mtls_cert()
+    # ya tenemos cert_path/key_path preparados arriba
     meta["mtls_cert_path"] = cert_path
     meta["mtls_key_path"] = key_path
-
     headers = {
         "Accept": "application/soap+xml, text/xml, */*",
     }
-    if soap_action:
-        headers["Content-Type"] = f'application/soap+xml; charset=utf-8; action="{soap_action}"'
+    # SOAP 1.2: SIEMPRE enviar Content-Type application/soap+xml
+    if soap_action is not None:
+        if str(soap_action) == "":
+            headers["Content-Type"] = "application/soap+xml; charset=utf-8"
+        else:
+            headers["Content-Type"] = f'application/soap+xml; charset=utf-8; action="{soap_action}"'
     else:
         headers["Content-Type"] = "application/soap+xml; charset=utf-8"
 

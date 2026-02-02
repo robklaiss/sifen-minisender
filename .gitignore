@@ -1,9 +1,20 @@
-.venv/
-artifacts/
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Editor/IDE
 .vscode/
 .idea/
+.windsurf/
+
+# Local artifacts / backups
+backups/
+artifacts/
+webui/
+*.bak*

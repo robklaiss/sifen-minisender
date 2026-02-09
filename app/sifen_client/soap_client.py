@@ -21,6 +21,7 @@ Notas importantes:
 import os
 import json
 import logging
+import re
 import time
 import random
 from datetime import datetime
@@ -499,10 +500,12 @@ class SoapClient:
             self._temp_pem_files = None
             # Guardar artifact con certificados resueltos
             try:
+                artifacts_dir = os.getenv("SIFEN_ARTIFACTS_DIR") or os.getenv("SIFEN_ARTIFACTS_PATH") or "artifacts"
                 save_resolved_certs_artifact(
-                    mtls_cert=cert_path,
-                    mtls_key=key_or_password,
-                    mtls_mode="PEM"
+                    artifacts_dir=artifacts_dir,
+                    cert_path=cert_path,
+                    key_path=key_or_password,
+                    note="mTLS PEM"
                 )
             except Exception as e:
                 logger.warning(f"No se pudo guardar artifact de certificados: {e}")
@@ -521,9 +524,12 @@ class SoapClient:
                 
                 # Guardar artifact con certificados resueltos
                 try:
+                    artifacts_dir = os.getenv("SIFEN_ARTIFACTS_DIR") or os.getenv("SIFEN_ARTIFACTS_PATH") or "artifacts"
                     save_resolved_certs_artifact(
-                        mtls_cert=cert_path,
-                        mtls_mode="P12"
+                        artifacts_dir=artifacts_dir,
+                        cert_path=cert_path,
+                        key_path=key_pem_path,
+                        note="mTLS P12->PEM"
                     )
                 except Exception as e:
                     logger.warning(f"No se pudo guardar artifact de certificados: {e}")
@@ -1453,6 +1459,8 @@ class SoapClient:
                     url,
                     data=soap_bytes,
                     headers=headers,
+                    cert=(self.config.cert_pem_path, self.config.key_pem_path),
+                    verify=self.config.ca_bundle_path,
                     timeout=(self.connect_timeout, self.read_timeout),
                 )
                 response_status = resp.status_code
@@ -3093,7 +3101,14 @@ class SoapClient:
         try:
             client = self._get_client(service_key)
         except Exception as e:
-            raise SifenClientError(f"Error al obtener cliente zeep para {service_key}: {e}")
+            # Fallback a consulta_lote_raw si falla el WSDL/zeep
+            logger.warning(f"Fallo zeep/WSDL en consulta_lote_de: {e}. Usando consulta_lote_raw.")
+            raw = self.consulta_lote_raw(dprot_cons_lote, did=str(did))
+            if "codigo_respuesta" not in raw:
+                raw["codigo_respuesta"] = raw.get("dCodResLot") or raw.get("dCodRes")
+            if "mensaje" not in raw:
+                raw["mensaje"] = raw.get("dMsgResLot") or raw.get("dMsgRes")
+            return raw
         
         # Obtener history plugin si está disponible (para debug)
         history = None
@@ -3254,8 +3269,17 @@ class SoapClient:
             
             return parsed_result
             
-        except SifenClientError:
-            raise  # Re-raise SifenClientError tal cual
+        except SifenClientError as e:
+            msg = str(e)
+            if "operation" in msg.lower() or "wsdl" in msg.lower():
+                logger.warning(f"Fallback a consulta_lote_raw por error WSDL/operación: {msg}")
+                raw = self.consulta_lote_raw(dprot_cons_lote, did=str(did))
+                if "codigo_respuesta" not in raw:
+                    raw["codigo_respuesta"] = raw.get("dCodResLot") or raw.get("dCodRes")
+                if "mensaje" not in raw:
+                    raw["mensaje"] = raw.get("dMsgResLot") or raw.get("dMsgRes")
+                return raw
+            raise  # Re-raise otros errores
         except ConnectionResetError as e:
             # Reintentar solo para ConnectionResetError (máximo 2 veces)
             delays = [0.4, 0.8]
@@ -3473,16 +3497,12 @@ class SoapClient:
 
         wsdl_url = self.config.get_soap_service_url("consulta_lote")
         endpoint_base = wsdl_url[:-5] if wsdl_url.endswith(".wsdl") else wsdl_url
-        endpoint_candidates = []
-        for candidate in [endpoint_base, wsdl_url]:
-            if candidate and candidate not in endpoint_candidates:
-                endpoint_candidates.append(candidate)
 
-        content_type_variants = [
-            'application/soap+xml; charset=utf-8',
-            'application/soap+xml; charset=utf-8',
-        ]
+        # IMPORTANTE: SIFEN resetea conexión si hacemos POST al .wsdl.
+        # El .wsdl se usa solo para GET (validación); el POST va al endpoint_base.
+        endpoint_candidates = [endpoint_base]
 
+        content_type_variants = ['application/soap+xml; charset=utf-8; action=""']
         attempts: List[Dict[str, Any]] = []
         last_error: Optional[Exception] = None
         
@@ -3552,6 +3572,8 @@ class SoapClient:
                         endpoint,
                         data=soap_bytes,
                         headers=headers,
+                        cert=(self.config.cert_pem_path, self.config.key_pem_path),
+                        verify=self.config.ca_bundle_path,
                         timeout=(self.connect_timeout, self.read_timeout),
                     )
                     response_body = resp.content or b""
@@ -4022,11 +4044,22 @@ class SoapClient:
         import random
         import time
         
-        # Parsear RUC: puede venir como "RUC-DV" (ej: "4554737-8") o solo "RUC" (ej: "4554737")
-        # Para siConsRUC, se debe enviar SOLO el número sin DV (no concatenar)
-        ruc_clean = ruc.strip()
-        # Extraer solo la parte antes del guión (si existe)
-        ruc_final = ruc_clean.split("-", 1)[0].strip()  # 4554737-8 -> 4554737
+        # Parsear RUC: puede venir como "RUC-DV" (ej: "4554737-8") o "RUC+DV" (ej: "45547378")
+        # Por defecto enviamos el RUC con DV integrado (sin guión), configurable vía env.
+        from app.sifen_client.cdc_utils import calc_dv_mod11
+
+        ruc_clean = (ruc or "").strip()
+        digits = re.sub(r"\\D", "", ruc_clean)
+        use_dv = (os.getenv("SIFEN_RUC_WITH_DV") or "1").strip().lower() in ("1", "true", "yes")
+        ruc_final = digits
+        if not use_dv and len(digits) >= 2:
+            base = digits[:-1]
+            try:
+                dv = calc_dv_mod11(base)
+                if str(dv) == digits[-1]:
+                    ruc_final = base
+            except Exception:
+                ruc_final = digits
         
         # Generar dId de 15 dígitos si no se proporciona (formato: YYYYMMDDHHMMSS + 1 dígito aleatorio)
         # Igual que en rEnvioLote y consulta_de_por_cdc_raw

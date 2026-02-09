@@ -12,9 +12,13 @@ __pycache__/
 .vscode/
 .idea/
 .windsurf/
+.DS_Store
 
 # Local artifacts / backups
 backups/
 artifacts/
-webui/
+webui/data.db
+webui/data.db-shm
+webui/data.db-wal
 *.bak*
+.env

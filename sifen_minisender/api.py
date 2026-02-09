@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import requests
+import ssl
+from requests.adapters import HTTPAdapter
 from lxml import etree
 
 SIFEN_NS = "http://ekuatia.set.gov.py/sifen/xsd"
@@ -26,13 +28,34 @@ DEFAULT_RECIBE_LOTE_ENDPOINTS = {
 
 DEFAULT_CONSULTA_LOTE_WSDL = {
     "test": "https://sifen-test.set.gov.py/de/ws/consultas/consulta-lote.wsdl",
-    "prod": "https://sifen.set.gov.py/de/ws/async/consulta-lote.wsdl",
+    "prod": "https://sifen.set.gov.py/de/ws/consultas/consulta-lote.wsdl",
 }
 
 WSDL_NS = "http://schemas.xmlsoap.org/wsdl/"
 SOAP12_BINDING_NS = "http://schemas.xmlsoap.org/wsdl/soap12/"
 
 _XML_DECL_RE = re.compile(br"^\s*<\?xml[^>]*\?>\s*", re.I)
+
+_DEFAULT_LOCAL_WSDL_CANDIDATES = (
+    Path("artifacts/_wsdl_consulta_lote_curl.wsdl.xml"),
+    Path("artifacts/_wsdl_probe_requests_ua.wsdl.xml"),
+)
+
+
+class _TLS12Adapter(HTTPAdapter):
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        ctx = ssl.create_default_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+        pool_kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+
+
+def _make_session(force_tls12: bool) -> requests.Session:
+    sess = requests.Session()
+    if force_tls12:
+        sess.mount("https://", _TLS12Adapter())
+    return sess
 
 
 def _strip_xml_decl(b: bytes) -> bytes:
@@ -95,8 +118,10 @@ def _strip_rde_opening_attrs(lote_xml_text: str) -> str:
     def repl(m: re.Match) -> str:
         prefix = m.group("prefix") or ""
         attrs = m.group("attrs") or ""
-        attrs = re.sub(r'\s+xmlns:xsi="[^"]*"', "", attrs)
-        attrs = re.sub(r'\s+xsi:schemaLocation="[^"]*"', "", attrs)
+        strip_xsi = (os.getenv("SIFEN_STRIP_XSI") or "").strip().lower() in ("1", "true", "yes")
+        if strip_xsi:
+            attrs = re.sub(r'\s+xmlns:xsi="[^"]*"', "", attrs)
+            attrs = re.sub(r'\s+xsi:schemaLocation="[^"]*"', "", attrs)
         return f"<{prefix}rDE{attrs}>"
 
     return re.sub(
@@ -195,14 +220,38 @@ def _get_consulta_lote_wsdl_and_endpoint(env: str) -> Tuple[str, str]:
     if env_norm not in ("test", "prod"):
         raise SystemExit(f"ERROR: env inválido para consulta-lote: {env!r} (usar test|prod)")
 
+    direct = (os.getenv("SIFEN_CONSULTA_LOTE_ENDPOINT") or "").strip()
+    endpoint_cfg = _normalize_endpoint(direct) if direct else ""
+
+    wsdl_env = (os.getenv("SIFEN_WSDL_CONSULTA_LOTE") or "").strip()
+    if wsdl_env:
+        wsdl_url = wsdl_env
+        if not endpoint_cfg:
+            endpoint_cfg = _normalize_endpoint(wsdl_env)
+        return wsdl_url, endpoint_cfg
+
     if env_norm == "test":
         host = "sifen-test.set.gov.py"
     else:
         host = "sifen.set.gov.py"
 
     wsdl_url = f"https://{host}/de/ws/consultas/consulta-lote.wsdl?wsdl"
-    endpoint_cfg = f"https://{host}/de/ws/consultas/consulta-lote.wsdl"
+    if not endpoint_cfg:
+        endpoint_cfg = f"https://{host}/de/ws/consultas/consulta-lote.wsdl"
     return wsdl_url, endpoint_cfg
+
+
+def _load_local_wsdl_bytes() -> Tuple[Optional[bytes], Optional[str]]:
+    local_env = (os.getenv("SIFEN_WSDL_CONSULTA_LOTE_LOCAL") or "").strip()
+    candidates = []
+    if local_env:
+        candidates.append(Path(local_env).expanduser())
+    candidates.extend(_DEFAULT_LOCAL_WSDL_CANDIDATES)
+
+    for cand in candidates:
+        if cand.exists() and cand.is_file():
+            return cand.read_bytes(), str(cand)
+    return None, None
 
 
 def _analyze_consulta_lote_wsdl(wsdl_bytes: bytes):
@@ -278,7 +327,9 @@ def _analyze_consulta_lote_wsdl(wsdl_bytes: bytes):
         if (bop.get("name") or "").strip() == op_name:
             soap_elems = bop.xpath("./soap12:operation", namespaces=ns)
             if soap_elems:
-                soap_action = (soap_elems[0].get("soapAction") or "").strip() or None
+                raw = soap_elems[0].get("soapAction")
+                if raw is not None:
+                    soap_action = raw.strip()
             break
 
     return address_location, body_ns, body_local, soap_action, op_name
@@ -286,10 +337,13 @@ def _analyze_consulta_lote_wsdl(wsdl_bytes: bytes):
 
 def _build_consulta_lote_soap_envelope(body_ns: str, body_localname: str, prot: str) -> bytes:
     ns_for_body = body_ns or SIFEN_NS
-    envelope = etree.Element(etree.QName(SOAP12_NS, "Envelope"), nsmap={"soap": SOAP12_NS, "xsd": SIFEN_NS})
+    did = _make_did_15()
+    envelope = etree.Element(etree.QName(SOAP12_NS, "Envelope"), nsmap={"soap": SOAP12_NS})
     etree.SubElement(envelope, etree.QName(SOAP12_NS, "Header"))
     body = etree.SubElement(envelope, etree.QName(SOAP12_NS, "Body"))
-    root = etree.Element(etree.QName(ns_for_body, body_localname), nsmap={"xsd": ns_for_body})
+    root = etree.Element(etree.QName(ns_for_body, body_localname), nsmap={None: ns_for_body})
+    d_id = etree.SubElement(root, etree.QName(ns_for_body, "dId"))
+    d_id.text = did
     dprot = etree.SubElement(root, etree.QName(ns_for_body, "dProtConsLote"))
     dprot.text = prot
     body.append(root)
@@ -317,7 +371,7 @@ def send(
     *,
     env: str,
     signed_rde_xml_path: Path,
-    zip_mode: str = "stored",
+    zip_mode: str = "deflated",
     did: Optional[str] = None,
     artifacts_root: Optional[Path] = None,
     do_http: bool = True,
@@ -572,6 +626,8 @@ def consult(
     body_local: Optional[str] = None
     soap_action: Optional[str] = None
     op_name: Optional[str] = None
+    wsdl_source: Optional[str] = None
+    wsdl_local_path: Optional[str] = None
     fallback_wsdl = False
     wsdl_error: Optional[str] = None
 
@@ -583,9 +639,12 @@ def consult(
     else:
         cert_path, key_path = None, None
 
+    force_tls12 = (os.getenv("SIFEN_FORCE_TLS12") or "1").strip().lower() in ("1", "true", "yes")
+    session = _make_session(force_tls12) if do_http else None
+
     if do_http:
         try:
-            wsdl_resp = requests.get(
+            wsdl_resp = session.get(
                 wsdl_url,
                 headers={
                     # Algunos endpoints de SIFEN devuelven 200 con body vacío si falta UA/Accept.
@@ -599,11 +658,26 @@ def consult(
             )
             wsdl_resp.raise_for_status()
             wsdl_bytes = wsdl_resp.content
+            if not wsdl_bytes.strip():
+                raise RuntimeError("WSDL vacío")
+            wsdl_source = "remote"
             address_from_wsdl, body_ns, body_local, soap_action, op_name = _analyze_consulta_lote_wsdl(wsdl_bytes)
         except Exception as exc:
-            fallback_wsdl = True
             wsdl_error = str(exc)
-            print(f"WARN consult fallback sin WSDL: {wsdl_url!r}: {exc}", file=sys.stderr)
+            local_bytes, local_path = _load_local_wsdl_bytes()
+            if local_bytes:
+                try:
+                    wsdl_bytes = local_bytes
+                    wsdl_source = "local"
+                    wsdl_local_path = local_path
+                    address_from_wsdl, body_ns, body_local, soap_action, op_name = _analyze_consulta_lote_wsdl(wsdl_bytes)
+                except Exception as exc2:
+                    fallback_wsdl = True
+                    wsdl_error = f"remote: {exc}; local: {exc2}"
+                    print(f"WARN consult fallback sin WSDL: {wsdl_url!r}: {wsdl_error}", file=sys.stderr)
+            else:
+                fallback_wsdl = True
+                print(f"WARN consult fallback sin WSDL: {wsdl_url!r}: {exc}", file=sys.stderr)
 
     if fallback_wsdl or not wsdl_bytes:
         soap_bytes = _build_consulta_lote_soap_fallback(prot_value)
@@ -611,9 +685,14 @@ def consult(
         soap_bytes = _build_consulta_lote_soap_envelope(body_ns, body_local, prot_value)
 
     endpoint_from_wsdl = address_from_wsdl
-    endpoint = endpoint_cfg or endpoint_from_wsdl or _normalize_endpoint(wsdl_url)
-    # FIX: nunca postear a un *.wsdl (SIFEN suele resetear). Convertir a endpoint real.
-    if endpoint.endswith(".wsdl"):
+    if wsdl_source == "local" and env_norm == "prod":
+        use_wsdl_address = (os.getenv("SIFEN_USE_WSDL_ADDRESS") or "").strip().lower() in ("1", "true", "yes")
+        if not use_wsdl_address:
+            endpoint_from_wsdl = None
+    # Prefer the address from WSDL when available (some services require POST to *.wsdl).
+    endpoint = endpoint_from_wsdl or endpoint_cfg or _normalize_endpoint(wsdl_url)
+    strip_wsdl = (os.getenv("SIFEN_STRIP_WSDL_ENDPOINTS") or "").strip().lower() in ("1", "true", "yes")
+    if strip_wsdl and endpoint.endswith(".wsdl"):
         endpoint = endpoint[:-5]
 
     if not endpoint:
@@ -634,6 +713,8 @@ def consult(
         "timestamp": ts,
         "env": env_norm,
         "wsdl_url": wsdl_url,
+        "wsdl_source": wsdl_source,
+        "wsdl_local_path": wsdl_local_path,
         "endpoint": endpoint,
         "endpoint_from_wsdl": endpoint_from_wsdl,
         "soap_action": soap_action,
@@ -655,12 +736,12 @@ def consult(
     meta["mtls_cert_path"] = cert_path
     meta["mtls_key_path"] = key_path
     headers = {
-        "Accept": "application/soap+xml, text/xml, */*",
+        "Accept": "application/soap+xml",
     }
     # SOAP 1.2: SIEMPRE enviar Content-Type application/soap+xml
     if soap_action is not None:
         if str(soap_action) == "":
-            headers["Content-Type"] = "application/soap+xml; charset=utf-8"
+            headers["Content-Type"] = 'application/soap+xml; charset=utf-8; action=""'
         else:
             headers["Content-Type"] = f'application/soap+xml; charset=utf-8; action="{soap_action}"'
     else:
@@ -669,7 +750,7 @@ def consult(
     start = time.time()
     resp = None
     try:
-        resp = requests.post(
+        resp = session.post(
             endpoint,
             data=soap_bytes,
             headers=headers,
@@ -718,7 +799,7 @@ def main(argv=None) -> int:
 
     p_send = sub.add_parser("send")
     p_send.add_argument("--env", required=True, choices=["test", "prod"])
-    p_send.add_argument("--zip", dest="zip_mode", default="stored", choices=["stored", "deflated"])
+    p_send.add_argument("--zip", dest="zip_mode", default="deflated", choices=["stored", "deflated"])
     p_send.add_argument("--did", default="auto")
     p_send.add_argument("--no-http", action="store_true")
     p_send.add_argument("--artifacts-root", type=Path, default=None)

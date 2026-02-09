@@ -31,8 +31,18 @@ pip install -r requirements.txt
   - `SIFEN_CONSULTA_LOTE_ENDPOINT` (URL real del endpoint, sin `?wsdl`)
   - `SIFEN_WSDL_CONSULTA_LOTE` (WSDL; se deriva endpoint quitando `?wsdl` si existe)
   - defaults:
-    - TEST: `https://sifen-test.set.gov.py/de/ws/async/consulta-lote.wsdl`
-    - PROD: `https://sifen.set.gov.py/de/ws/async/consulta-lote.wsdl`
+    - TEST: `https://sifen-test.set.gov.py/de/ws/consultas/consulta-lote.wsdl`
+    - PROD: `https://sifen.set.gov.py/de/ws/consultas/consulta-lote.wsdl`
+- Control de endpoint para consulta-lote:
+  - `SIFEN_STRIP_WSDL_ENDPOINTS=1` para forzar quitar el sufijo `.wsdl` antes de POST (por defecto se respeta el `soap:address` del WSDL).
+- Fallback WSDL local (si el GET remoto devuelve vacío o falla):
+  - `SIFEN_WSDL_CONSULTA_LOTE_LOCAL=/ruta/al/wsdl.xml`
+  - Si no se setea, se intenta con `artifacts/_wsdl_consulta_lote_curl.wsdl.xml` y `artifacts/_wsdl_probe_requests_ua.wsdl.xml` si existen.
+  - Para `--env prod`, por defecto NO se usa el `soap:address` del WSDL local (usar `SIFEN_USE_WSDL_ADDRESS=1` si querés forzarlo).
+- TLS:
+  - `SIFEN_FORCE_TLS12=1` (default) para forzar TLS 1.2 en consulta-lote.
+- Lote/rDE:
+  - `SIFEN_STRIP_XSI=1` para remover `xmlns:xsi` y `xsi:schemaLocation` del `rDE` dentro del lote (por defecto se conservan, recomendado).
 
 **Guardrail PROD**: para `--env prod` se requiere `SIFEN_CONFIRM_PROD=YES`.
 
@@ -45,14 +55,14 @@ Ejemplo usando el `signed_rde.xml` ya existente en `tesaka-if`:
 ```bash
 python -m sifen_minisender send \
   --env test \
-  /Users/robinklaiss/Dev/tesaka-if/artifacts/run_20260201_000044/signed_rde.xml
+  artifacts/fix_20260206/signed_rde_valid_cdc.xml
 ```
 
-Opcional: ZIP con compresión deflated:
+Por defecto usa ZIP `deflated` (recomendado; con `stored` vimos rechazos `XML Mal Formado` en test). Para forzar `stored`:
 
 ```bash
-python -m sifen_minisender send --env test --zip deflated \
-  /Users/robinklaiss/Dev/tesaka-if/artifacts/run_20260201_000044/signed_rde.xml
+python -m sifen_minisender send --env test --zip stored \
+  artifacts/fix_20260206/signed_rde_valid_cdc.xml
 ```
 
 Cada corrida crea un directorio `artifacts/run_YYYYmmdd_HHMMSS/` con:
@@ -62,6 +72,8 @@ Cada corrida crea un directorio `artifacts/run_YYYYmmdd_HHMMSS/` con:
 - `lote.xml`
 - `zip_sent.bin`
 - `meta.json`
+
+Nota: si en `consult` aparece `1101 TEST - Número de timbrado inválido`, el XML firmado tiene un timbrado no vigente para el emisor. Hay que **re-generar y re-firmar** el `signed_rde.xml` con un `dNumTim` válido (y `dFeIniT` correspondiente). Este repo no firma: el timbrado correcto debe venir del generador que produce el XML.
 
 ### 2) Inspeccionar artifacts (`inspect`)
 

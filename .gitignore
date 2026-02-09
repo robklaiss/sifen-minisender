@@ -22,3 +22,6 @@ webui/data.db-shm
 webui/data.db-wal
 *.bak*
 .env
+*.p12
+*.pem
+*.key

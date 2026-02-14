@@ -14,8 +14,8 @@ import random
 import zipfile
 from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
-from datetime import datetime
-from flask import Flask, g, request, redirect, url_for, render_template_string, abort, send_file
+from datetime import datetime, date
+from flask import Flask, g, request, redirect, url_for, render_template_string, abort, send_file, jsonify
 from pathlib import Path
 from typing import Optional
 import xml.etree.ElementTree as ET
@@ -166,6 +166,7 @@ _POLLING = set()
 _POLL_LOCK = None
 _BACKUP_LOCK = None
 _BACKUP_THREAD_STARTED = False
+_LOTE_SYNC_THREAD_STARTED = False
 _BOOTSTRAP_LOCK = None
 _BOOTSTRAPPED = False
 
@@ -224,6 +225,7 @@ CREATE TABLE IF NOT EXISTS customers (
             currency TEXT DEFAULT 'PYG',
             total INTEGER DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'DRAFT',
+            sifen_env TEXT,
             doc_type TEXT DEFAULT '1',
             doc_number TEXT,
             doc_extra_json TEXT,
@@ -281,6 +283,8 @@ CREATE TABLE IF NOT EXISTS customers (
         con.execute("ALTER TABLE invoices ADD COLUMN last_lote_code TEXT")
     if 'last_lote_msg' not in cols:
         con.execute("ALTER TABLE invoices ADD COLUMN last_lote_msg TEXT")
+    if 'sifen_env' not in cols:
+        con.execute("ALTER TABLE invoices ADD COLUMN sifen_env TEXT")
     if 'doc_number' not in cols:
         con.execute("ALTER TABLE invoices ADD COLUMN doc_number TEXT")
     if 'signed_at' not in cols:
@@ -353,10 +357,10 @@ def _ensure_signed_at(con: sqlite3.Connection, inv: sqlite3.Row, invoice_id: int
 
 def _ensure_codseg(con: sqlite3.Connection, inv: sqlite3.Row, invoice_id: int) -> str:
     codseg = (inv["codseg"] or "").strip() if "codseg" in inv.keys() else ""
-    if codseg:
+    if codseg and re.fullmatch(r"\d{9}", codseg):
         return codseg
     env_cod = (os.getenv("SIFEN_CODSEG") or "").strip()
-    if re.fullmatch(r"\\d{9}", env_cod):
+    if re.fullmatch(r"\d{9}", env_cod):
         codseg = env_cod
     else:
         codseg = str(random.randint(0, 999999999)).zfill(9)
@@ -394,6 +398,129 @@ def _backfill_doc_info_from_xml(con: sqlite3.Connection, inv: sqlite3.Row, invoi
 def _fmt_decimal(value: Decimal, places: int = 4) -> str:
     q = Decimal("1." + ("0" * places))
     return str(Decimal(value).quantize(q, rounding=ROUND_HALF_UP))
+
+
+def _to_decimal(value, default: Optional[Decimal] = Decimal("0")) -> Optional[Decimal]:
+    if value is None:
+        return default
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, float):
+        return Decimal(str(value))
+    raw = str(value).strip()
+    if not raw:
+        return default
+    cleaned = re.sub(r"[^\d,.\-]", "", raw)
+    if not cleaned or cleaned in ("-", ".", ","):
+        return default
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "")
+            cleaned = cleaned.replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(",", ".")
+    try:
+        return Decimal(cleaned)
+    except Exception:
+        return default
+
+
+def _fmt_decimal_places(value: Decimal, places: int) -> str:
+    if places <= 0:
+        return str(int(Decimal(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP)))
+    q = Decimal("1." + ("0" * places))
+    return str(Decimal(value).quantize(q, rounding=ROUND_HALF_UP))
+
+
+def _decimal_places_from_text(text: Optional[str], default: int) -> int:
+    if text is None:
+        return default
+    raw = str(text).strip()
+    m = re.match(r"^-?\d+[.,](\d+)$", raw)
+    if not m:
+        return default
+    return len(m.group(1))
+
+
+def _infer_places_from_xpath(root: ET.Element, xpath: str, ns: dict, default: int) -> int:
+    el = root.find(xpath, ns)
+    if el is None:
+        return default
+    return _decimal_places_from_text(el.text, default)
+
+
+def _line_get(line, key: str, default=None):
+    if isinstance(line, dict):
+        return line.get(key, default)
+    try:
+        return line[key]
+    except Exception:
+        return default
+
+
+def _safe_get_setting(key: str, default: str = "") -> str:
+    try:
+        return get_setting(key, default)
+    except Exception:
+        return default
+
+
+def _config_value(setting_key: str, env_keys: list[str]) -> tuple[str, str]:
+    sval = (_safe_get_setting(setting_key, "") or "").strip()
+    if sval:
+        return sval, f"settings:{setting_key}"
+    for env_key in env_keys:
+        ev = (os.getenv(env_key) or "").strip()
+        if ev:
+            return ev, f"env:{env_key}"
+    return "", ""
+
+
+def _resolve_timb_values(
+    *,
+    establishment: Optional[str],
+    point_exp: Optional[str],
+    template_tim: dict,
+) -> tuple[dict, list[str]]:
+    warnings: list[str] = []
+
+    tim_num, tim_src = _config_value(
+        "timbrado_num",
+        ["SIFEN_TIMBRADO_NUM", "SIFEN_NUM_TIMBRADO", "SIFEN_DNUMTIM"],
+    )
+    tim_fe_ini, fe_ini_src = _config_value(
+        "timbrado_fe_ini",
+        ["SIFEN_TIMBRADO_FE_INI", "SIFEN_DFEINIT"],
+    )
+    est_setting, _ = _config_value(
+        "est",
+        ["SIFEN_EST", "SIFEN_ESTABLECIMIENTO", "SIFEN_DEFAULT_EST"],
+    )
+    pun_setting, _ = _config_value(
+        "pun",
+        ["SIFEN_PUN", "SIFEN_PUN_EXP", "SIFEN_PUNTO_EXPEDICION", "SIFEN_DEFAULT_PUN"],
+    )
+
+    if not tim_src:
+        warnings.append("timbrado_num no configurado en settings/env; se usa valor del template.")
+    if not fe_ini_src:
+        warnings.append("timbrado_fe_ini no configurado en settings/env; se usa valor del template.")
+
+    est_arg = _zfill_digits(establishment, 3)
+    pun_arg = _zfill_digits(point_exp, 3)
+    est = est_arg or _zfill_digits(est_setting, 3) or _zfill_digits(_safe_get_setting("default_establishment", ""), 3)
+    pun = pun_arg or _zfill_digits(pun_setting, 3) or _zfill_digits(_safe_get_setting("default_point_exp", ""), 3)
+
+    return {
+        "dNumTim": _zfill_digits(tim_num, 8) or (template_tim.get("dNumTim") or ""),
+        "dFeIniT": (tim_fe_ini or template_tim.get("dFeIniT") or "").strip(),
+        "dEst": est or (template_tim.get("dEst") or ""),
+        "dPunExp": pun or (template_tim.get("dPunExp") or ""),
+    }, warnings
 
 def normalize_doc_type(value: Optional[str]) -> str:
     raw = re.sub(r"\D", "", (value or "").strip())
@@ -607,9 +734,22 @@ def _split_ruc_dv(ruc_raw: Optional[str]) -> tuple[str, str]:
         dv = ""
     return digits, dv
 
-def _default_template_path() -> str:
-    cand = _repo_root() / "artifacts" / "prod_emit_20260206" / "rde_input.xml"
-    return str(cand) if cand.exists() else ""
+def _default_template_path(doc_type: str = "1") -> str:
+    # Prefer versioned templates shipped with the repo/image so Docker/EC2
+    # does not depend on local artifacts history.
+    default_by_type = {
+        "1": _repo_root() / "templates" / "xml" / "rde_factura.xml",
+        "4": _repo_root() / "templates" / "xml" / "rde_autofactura.xml",
+        "5": _repo_root() / "templates" / "xml" / "rde_nota_credito.xml",
+        "6": _repo_root() / "templates" / "xml" / "rde_nota_debito.xml",
+        "7": _repo_root() / "templates" / "xml" / "rde_remision.xml",
+    }
+    cand = default_by_type.get((doc_type or "").strip(), default_by_type["1"])
+    if cand.exists():
+        return str(cand)
+    # Backward-compatible fallback for older deployments.
+    legacy = _repo_root() / "artifacts" / "prod_emit_20260206" / "rde_input.xml"
+    return str(legacy) if legacy.exists() else ""
 
 def _template_for_doc_type(doc_type: str) -> str:
     key_map = {
@@ -624,7 +764,7 @@ def _template_for_doc_type(doc_type: str) -> str:
     if path:
         return path
     fallback = (get_setting("template_xml_path", "") or "").strip()
-    return fallback or _default_template_path()
+    return fallback or _default_template_path(doc_type)
 
 def _next_doc_number(con: sqlite3.Connection, invoice_id: int, est: str = "", pun: str = "", doc_type: str = "") -> str:
     est = _zfill_digits(est, 3) or ""
@@ -947,12 +1087,32 @@ def _build_invoice_xml_from_template(
     root = ET.fromstring(xml)
 
     # Documento / fechas
+    def _text(path: str) -> str:
+        el = root.find(path, ns)
+        return (el.text or "").strip() if el is not None and el.text else ""
+
+    template_tim = {
+        "dNumTim": _text(".//s:gTimb/s:dNumTim"),
+        "dFeIniT": _text(".//s:gTimb/s:dFeIniT"),
+        "dEst": _text(".//s:gTimb/s:dEst"),
+        "dPunExp": _text(".//s:gTimb/s:dPunExp"),
+    }
+    tim_values, build_warnings = _resolve_timb_values(
+        establishment=establishment,
+        point_exp=point_exp,
+        template_tim=template_tim,
+    )
+
     dnumdoc = doc_number or str(invoice_id).zfill(7)
     _update_text(root, ".//s:gTimb/s:dNumDoc", dnumdoc, ns)
-    if establishment:
-        _update_text(root, ".//s:gTimb/s:dEst", _zfill_digits(establishment, 3), ns)
-    if point_exp:
-        _update_text(root, ".//s:gTimb/s:dPunExp", _zfill_digits(point_exp, 3), ns)
+    if tim_values.get("dNumTim"):
+        _update_text(root, ".//s:gTimb/s:dNumTim", tim_values["dNumTim"], ns)
+    if tim_values.get("dFeIniT"):
+        _update_text(root, ".//s:gTimb/s:dFeIniT", tim_values["dFeIniT"], ns)
+    if tim_values.get("dEst"):
+        _update_text(root, ".//s:gTimb/s:dEst", tim_values["dEst"], ns)
+    if tim_values.get("dPunExp"):
+        _update_text(root, ".//s:gTimb/s:dPunExp", tim_values["dPunExp"], ns)
     _update_text(root, ".//s:gTimb/s:iTiDE", doc_type, ns)
     _update_text(root, ".//s:gTimb/s:dDesTiDE", doc_type_label(doc_type), ns)
 
@@ -960,10 +1120,28 @@ def _build_invoice_xml_from_template(
     iso = now.strftime("%Y-%m-%dT%H:%M:%S")
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)
     _update_text(root, ".//s:dFecFirma", iso, ns)
-    if codseg and re.fullmatch(r"\\d{9}", codseg):
-        gopede = root.find(".//s:gOpeDE", ns)
-        if gopede is not None:
-            _ensure_child_ns(gopede, "dCodSeg", ns_uri).text = codseg
+
+    codseg_digits = re.sub(r"\D", "", str(codseg or "").strip())
+    if not re.fullmatch(r"\d{9}", codseg_digits):
+        raise RuntimeError("codseg requerido y debe tener exactamente 9 dígitos.")
+    de_node = root.find(".//s:DE", ns)
+    if de_node is None:
+        raise RuntimeError("No se encontró <DE> en el XML base.")
+    gopede = de_node.find("s:gOpeDE", ns)
+    if gopede is None:
+        gopede = _ensure_child_ns(de_node, "gOpeDE", ns_uri)
+    _ensure_child_ns(gopede, "dCodSeg", ns_uri).text = codseg_digits
+
+    fe_ini = _text(".//s:gTimb/s:dFeIniT")
+    if fe_ini:
+        try:
+            fe_ini_date = date.fromisoformat(fe_ini[:10])
+            if now.date() < fe_ini_date:
+                raise RuntimeError(
+                    f"Fecha de emisión {now.date().isoformat()} anterior al inicio de timbrado {fe_ini_date.isoformat()}."
+                )
+        except ValueError:
+            raise RuntimeError(f"dFeIniT inválida en XML: {fe_ini!r}")
 
     # Receptor
     cust_name = (customer["name"] or "").strip()
@@ -1287,69 +1465,149 @@ def _build_invoice_xml_from_template(
     for item in existing_items:
         gdtip.remove(item)
 
+    currency = (_text(".//s:gDatGralOpe/s:gOpeCom/s:cMoneOpe") or "PYG").upper()
+    money_places_default = 0 if currency == "PYG" else 2
+
+    qty_places = _infer_places_from_xpath(base_item, "s:dCantProSer", ns, 2)
+    unit_places = _infer_places_from_xpath(base_item, "s:gValorItem/s:dPUniProSer", ns, money_places_default)
+    item_total_places = _infer_places_from_xpath(base_item, "s:gValorItem/s:dTotBruOpeItem", ns, money_places_default)
+    op_item_places = _infer_places_from_xpath(base_item, "s:gValorItem/s:gValorRestaItem/s:dTotOpeItem", ns, item_total_places)
+    base_places = _infer_places_from_xpath(base_item, "s:gCamIVA/s:dBasGravIVA", ns, 4)
+    iva_places = _infer_places_from_xpath(base_item, "s:gCamIVA/s:dLiqIVAItem", ns, 4)
+
     total = Decimal("0")
-    base_total = Decimal("0")
-    iva_total = Decimal("0")
+    sub_exe = Decimal("0")
+    sub_exo = Decimal("0")
+    sub5 = Decimal("0")
+    sub10 = Decimal("0")
+    base5 = Decimal("0")
+    base10 = Decimal("0")
+    iva5 = Decimal("0")
+    iva10 = Decimal("0")
     items_for_pdf = []
 
-    for idx, line in enumerate(lines, start=1):
-        qty = int(line["qty"] or 0)
-        price_unit = int(line["price_unit"] or 0)
-        line_total = int(line["line_total"] or (qty * price_unit))
+    afec_desc = {
+        "1": "Gravado IVA",
+        "2": "Exonerado IVA",
+        "3": "Exento IVA",
+    }
 
-        total += Decimal(line_total)
-        base = (Decimal(line_total) / Decimal("1.1"))
-        iva = base * Decimal("0.1")
-        base_total += base
-        iva_total += iva
+    for idx, line in enumerate(lines, start=1):
+        qty = _to_decimal(_line_get(line, "qty", 1), Decimal("1")) or Decimal("1")
+        if qty <= 0:
+            qty = Decimal("1")
+        price_unit = _to_decimal(_line_get(line, "price_unit", 0), Decimal("0")) or Decimal("0")
+
+        line_total = _to_decimal(_line_get(line, "line_total"), None)
+        if line_total is None:
+            line_total = qty * price_unit
+        if line_total < 0:
+            raise RuntimeError(f"line_total inválido en línea {idx}: {line_total}")
+
+        iva_rate_raw = _line_get(line, "iva_rate", _line_get(line, "tax_rate", _line_get(line, "iva")))
+        iva_rate = _to_decimal(iva_rate_raw, Decimal("10")) or Decimal("10")
+        if iva_rate not in (Decimal("0"), Decimal("5"), Decimal("10")):
+            iva_rate = Decimal("10")
+
+        afec = str(
+            _line_get(line, "afectacion", _line_get(line, "iAfecIVA", ""))
+        ).strip()
+        if afec not in ("1", "2", "3"):
+            afec = "1" if iva_rate in (Decimal("5"), Decimal("10")) else "3"
+        if afec != "1":
+            iva_rate = Decimal("0")
+
+        if afec == "1" and iva_rate in (Decimal("5"), Decimal("10")):
+            factor = Decimal("1") + (iva_rate / Decimal("100"))
+            base = (line_total / factor)
+            iva = line_total - base
+            base = Decimal(_fmt_decimal_places(base, base_places))
+            iva = Decimal(_fmt_decimal_places(iva, iva_places))
+        else:
+            base = Decimal("0")
+            iva = Decimal("0")
+
+        total += line_total
+        if afec == "1" and iva_rate == Decimal("5"):
+            sub5 += line_total
+            base5 += base
+            iva5 += iva
+        elif afec == "1" and iva_rate == Decimal("10"):
+            sub10 += line_total
+            base10 += base
+            iva10 += iva
+        elif afec == "2":
+            sub_exo += line_total
+        else:
+            sub_exe += line_total
 
         item = copy.deepcopy(base_item)
         _update_text(item, "s:dCodInt", f"{idx:03d}", ns)
-        _update_text(item, "s:dDesProSer", line["description"] or "", ns)
-        _update_text(item, "s:dCantProSer", str(qty), ns)
-        _update_text(item, "s:gValorItem/s:dPUniProSer", str(price_unit), ns)
-        _update_text(item, "s:gValorItem/s:dTotBruOpeItem", str(line_total), ns)
-        _update_text(item, "s:gValorItem/s:gValorRestaItem/s:dTotOpeItem", str(line_total), ns)
+        _update_text(item, "s:dDesProSer", _line_get(line, "description", "") or "", ns)
+        _update_text(item, "s:dCantProSer", _fmt_decimal_places(qty, qty_places), ns)
+        _update_text(item, "s:gValorItem/s:dPUniProSer", _fmt_decimal_places(price_unit, unit_places), ns)
+        _update_text(item, "s:gValorItem/s:dTotBruOpeItem", _fmt_decimal_places(line_total, item_total_places), ns)
+        _update_text(item, "s:gValorItem/s:gValorRestaItem/s:dTotOpeItem", _fmt_decimal_places(line_total, op_item_places), ns)
 
         gcamiva = item.find("s:gCamIVA", ns)
         if gcamiva is not None:
-            _update_text(gcamiva, "s:dBasGravIVA", _fmt_decimal(base), ns)
-            _update_text(gcamiva, "s:dLiqIVAItem", _fmt_decimal(iva), ns)
-            # dBasExe requerido en PROD
+            _update_text(gcamiva, "s:iAfecIVA", afec, ns)
+            _update_text(gcamiva, "s:dDesAfecIVA", afec_desc.get(afec, "Gravado IVA"), ns)
+            _update_text(gcamiva, "s:dPropIVA", "100" if afec == "1" else "0", ns)
+            _update_text(gcamiva, "s:dTasaIVA", str(int(iva_rate)), ns)
+            _update_text(gcamiva, "s:dBasGravIVA", _fmt_decimal_places(base, base_places), ns)
+            _update_text(gcamiva, "s:dLiqIVAItem", _fmt_decimal_places(iva, iva_places), ns)
             dbase = gcamiva.find("s:dBasExe", ns)
+            dbase_value = line_total if afec in ("2", "3") else Decimal("0")
+            dbase_text = _fmt_decimal_places(dbase_value, item_total_places)
             if dbase is None:
-                ET.SubElement(gcamiva, f"{{{ns_uri}}}dBasExe").text = "0"
+                ET.SubElement(gcamiva, f"{{{ns_uri}}}dBasExe").text = dbase_text
             else:
-                dbase.text = "0"
+                dbase.text = dbase_text
 
         gdtip.append(item)
 
         items_for_pdf.append({
-            "descripcion": line["description"],
-            "cantidad": qty,
-            "precio_unit": price_unit,
-            "iva": "10",
-            "total": line_total,
+            "descripcion": _line_get(line, "description", ""),
+            "cantidad": _fmt_decimal_places(qty, qty_places),
+            "precio_unit": _fmt_decimal_places(price_unit, unit_places),
+            "iva": str(int(iva_rate)),
+            "total": _fmt_decimal_places(line_total, item_total_places),
         })
 
-    total_str = str(int(total))
-    base_total_str = _fmt_decimal(base_total)
-    iva_total_str = _fmt_decimal(iva_total)
+    iva_total = iva5 + iva10
+    total_str = _fmt_decimal_places(total, money_places_default)
+    base_total_str = _fmt_decimal_places(base5 + base10, base_places)
+    iva_total_str = _fmt_decimal_places(iva_total, iva_places)
+    cdc_total_str = _fmt_decimal_places(total, 0)
 
     _update_text(root, ".//s:gDtipDE/s:gCamCond/s:gPaConEIni/s:dMonTiPag", total_str, ns)
 
     if doc_type != "7":
-        _update_text(root, ".//s:gTotSub/s:dSub10", total_str, ns)
-        _update_text(root, ".//s:gTotSub/s:dTotOpe", total_str, ns)
-        _update_text(root, ".//s:gTotSub/s:dTotGralOpe", total_str, ns)
-        _update_text(root, ".//s:gTotSub/s:dIVA10", iva_total_str, ns)
-        _update_text(root, ".//s:gTotSub/s:dLiqTotIVA10", "0", ns)
-        _update_text(root, ".//s:gTotSub/s:dTotIVA", iva_total_str, ns)
-        _update_text(root, ".//s:gTotSub/s:dBaseGrav10", base_total_str, ns)
-        _update_text(root, ".//s:gTotSub/s:dTBasGraIVA", base_total_str, ns)
-
         gtot = root.find(".//s:gTotSub", ns)
         if gtot is not None:
+            def _gtot_places(tag: str, default_places: int) -> int:
+                return _infer_places_from_xpath(root, f".//s:gTotSub/s:{tag}", ns, default_places)
+
+            def _set_gtot(tag: str, value: Decimal, default_places: int) -> None:
+                el = _ensure_child_ns(gtot, tag, ns_uri)
+                el.text = _fmt_decimal_places(value, _gtot_places(tag, default_places))
+
+            _set_gtot("dSubExe", sub_exe, money_places_default)
+            _set_gtot("dSubExo", sub_exo, money_places_default)
+            _set_gtot("dSub5", sub5, money_places_default)
+            _set_gtot("dSub10", sub10, money_places_default)
+            _set_gtot("dTotOpe", total, money_places_default)
+            _set_gtot("dTotGralOpe", total, money_places_default)
+            _set_gtot("dIVA5", iva5, iva_places)
+            _set_gtot("dIVA10", iva10, iva_places)
+            _set_gtot("dLiqTotIVA5", Decimal("0"), iva_places)
+            _set_gtot("dLiqTotIVA10", Decimal("0"), iva_places)
+            _set_gtot("dTotIVA", iva_total, iva_places)
+            _set_gtot("dBaseGrav5", base5, base_places)
+            _set_gtot("dBaseGrav10", base10, base_places)
+            _set_gtot("dTBasGraIVA", (base5 + base10), base_places)
+
             # PYG: no debe existir dTotalGs
             dtotal = gtot.find("s:dTotalGs", ns)
             if dtotal is not None:
@@ -1372,9 +1630,9 @@ def _build_invoice_xml_from_template(
                     "dComi",
                     "dIVAComi",
                 ]:
-                    el = gtot.find(f"s:{tag}", ns)
-                    if el is not None:
-                        gtot.remove(el)
+                        el = gtot.find(f"s:{tag}", ns)
+                        if el is not None:
+                            gtot.remove(el)
     else:
         # Remisión: no informar gTotSub
         gtot = root.find(".//s:gTotSub", ns)
@@ -1387,13 +1645,13 @@ def _build_invoice_xml_from_template(
                     pass
 
     # CDC
-    ruc_em = root.find(".//s:gEmis/s:dRucEm", ns).text.strip()
-    dv_em = root.find(".//s:gEmis/s:dDVEmi", ns).text.strip()
+    ruc_em = _text(".//s:gEmis/s:dRucEm")
+    dv_em = _text(".//s:gEmis/s:dDVEmi")
     ruc_full = f"{ruc_em}-{dv_em}"
-    timbrado = root.find(".//s:gTimb/s:dNumTim", ns).text.strip()
-    est = root.find(".//s:gTimb/s:dEst", ns).text.strip()
-    pun = root.find(".//s:gTimb/s:dPunExp", ns).text.strip()
-    tipo_doc = root.find(".//s:gTimb/s:iTiDE", ns).text.strip()
+    timbrado = _text(".//s:gTimb/s:dNumTim")
+    est = _text(".//s:gTimb/s:dEst")
+    pun = _text(".//s:gTimb/s:dPunExp")
+    tipo_doc = _text(".//s:gTimb/s:iTiDE")
     fecha = iso[:10].replace("-", "")
 
     cdc = generate_cdc(
@@ -1404,8 +1662,8 @@ def _build_invoice_xml_from_template(
         numero_documento=dnumdoc,
         tipo_documento=tipo_doc,
         fecha=fecha,
-        monto=total_str,
-        codseg=codseg,
+        monto=cdc_total_str,
+        codseg=codseg_digits,
     )
 
     de = root.find(".//s:DE", ns)
@@ -1475,6 +1733,7 @@ def _build_invoice_xml_from_template(
         "base_total_str": base_total_str,
         "iva_total_str": iva_total_str,
         "items_for_pdf": items_for_pdf,
+        "warnings": build_warnings,
     }
 
 def _update_qr_in_signed_xml(xml_text: str, csc: str, csc_id: str) -> tuple[str, dict]:
@@ -1733,15 +1992,20 @@ def _send_email_with_pdf(to_email: str, subject: str, body: str, pdf_path: Path)
     pdf_bytes = Path(pdf_path).read_bytes()
     msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=Path(pdf_path).name)
 
-    with smtplib.SMTP(host, port) as smtp:
-        smtp.ehlo()
-        if port == 587:
-            context = ssl.create_default_context()
+    context = ssl.create_default_context()
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=30) as smtp:
+            if user and password:
+                smtp.login(user, password)
+            smtp.send_message(msg)
+    else:
+        with smtplib.SMTP(host, port, timeout=30) as smtp:
+            smtp.ehlo()
             smtp.starttls(context=context)
             smtp.ehlo()
-        if user and password:
-            smtp.login(user, password)
-        smtp.send_message(msg)
+            if user and password:
+                smtp.login(user, password)
+            smtp.send_message(msg)
 
 def _queue_init():
     global _QUEUE_LOCK, _QUEUE_WORKER_STARTED
@@ -2106,6 +2370,118 @@ def _consult_lote_and_update(
 
     return final_status
 
+def _consult_cdc_and_update(invoice_id: int, env: str, cdc: str) -> str:
+    init_db()
+    con = get_db()
+    inv = con.execute("SELECT status FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+    if not inv:
+        return "MISSING"
+
+    client = None
+    try:
+        cfg = get_sifen_config(env=env)
+        client = SoapClient(cfg)
+        result = client.consulta_de_por_cdc_raw(cdc, dump_http=False)
+    except Exception as e:
+        con.execute(
+            "UPDATE invoices SET last_sifen_msg=? WHERE id=?",
+            (f"ERROR consulta CDC: {e}", invoice_id),
+        )
+        con.commit()
+        return inv["status"]
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+
+    raw_xml = result.get("raw_xml") or ""
+    parsed = _parse_consult_de_response(raw_xml)
+    dCodRes = parsed.get("dCodRes") or ""
+    dMsgRes = (parsed.get("dMsgRes") or "").strip()
+    prot_aut = parsed.get("dProtAut") or ""
+    http_status = result.get("http_status")
+    if http_status:
+        dMsgRes = (dMsgRes + f" | http={http_status}").strip()
+
+    est = ""
+    new_status = inv["status"]
+    if dCodRes == "0422":
+        est = "CDC encontrado"
+        if new_status not in ("CONFIRMED_OK", "CONFIRMED_REJECTED"):
+            new_status = "CONFIRMED_OK"
+    confirmed_at = now_iso() if new_status == "CONFIRMED_OK" else None
+
+    con.execute(
+        """
+        UPDATE invoices SET
+            status=?,
+            confirmed_at=COALESCE(confirmed_at, ?),
+            last_sifen_code=?,
+            last_sifen_msg=?,
+            last_sifen_prot_aut=COALESCE(?, last_sifen_prot_aut),
+            last_sifen_est=COALESCE(?, last_sifen_est)
+        WHERE id=?
+        """,
+        (new_status, confirmed_at, dCodRes or None, dMsgRes or None, prot_aut or None, est or None, invoice_id),
+    )
+    con.commit()
+    return new_status
+
+def _sync_pending_lotes(batch_size: int = 15) -> None:
+    init_db()
+    con = get_db()
+    rows = con.execute(
+        """
+        SELECT id, status, sifen_env, sifen_prot_cons_lote, source_xml_path, last_artifacts_dir
+        FROM invoices
+        WHERE status IN ('QUEUED','SENT','CONFIRMING')
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (batch_size,),
+    ).fetchall()
+
+    default_env = get_setting("default_env", "prod") or "prod"
+    for row in rows:
+        env = (row["sifen_env"] or default_env).strip().lower()
+        if env not in ("test", "prod"):
+            env = "prod"
+        prot = (row["sifen_prot_cons_lote"] or "").strip()
+        if prot:
+            _consult_lote_and_update(
+                invoice_id=row["id"],
+                env=env,
+                prot=prot,
+                rel_signed=row["source_xml_path"] or None,
+                prefer_art_dir=row["last_artifacts_dir"] or None,
+                attempts=1,
+                sleep_between=0,
+            )
+            continue
+        cdc = _extract_cdc_from_xml_path(row["source_xml_path"] or "")
+        if cdc:
+            _consult_cdc_and_update(row["id"], env, cdc)
+
+def _start_lote_sync_scheduler(interval_sec: int = 120) -> None:
+    global _LOTE_SYNC_THREAD_STARTED
+    if _LOTE_SYNC_THREAD_STARTED:
+        return
+    _LOTE_SYNC_THREAD_STARTED = True
+
+    def worker():
+        while True:
+            try:
+                with app.app_context():
+                    _sync_pending_lotes()
+            except Exception:
+                pass
+            time.sleep(interval_sec)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -2259,6 +2635,7 @@ BASE_HTML = """
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
     body { padding: 24px; }
+    .brand-logo { height: 48px; width: auto; display: block; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     .nowrap { white-space: nowrap; }
     .backup-toast {
@@ -2287,11 +2664,18 @@ BASE_HTML = """
 <body>
   <div class="container">
     <div class="d-flex justify-content-between align-items-center mb-3">
-      <div>
-        <h3 class="mb-0">{{title}}</h3>
-        <div class="text-muted small">DB: <span class="mono">{{db_path}}</span></div>
+      <div class="d-flex align-items-center gap-3">
+        <img src="{{ url_for('issuer_logo') }}" alt="Industria Feris" class="brand-logo" onerror="this.style.display='none'">
+        <div>
+          <h3 class="mb-0">Industria Feris - Facturación</h3>
+        </div>
       </div>
       <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="{{ url_for('invoices') }}" title="Inicio" aria-label="Inicio">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8.354 1.146a.5.5 0 0 0-.708 0l-6 6A.5.5 0 0 0 2 7.5V14a1 1 0 0 0 1 1h4a.5.5 0 0 0 .5-.5V10h1v4.5a.5.5 0 0 0 .5.5h4a1 1 0 0 0 1-1V7.5a.5.5 0 0 0 .146-.354.5.5 0 0 0-.146-.353l-6-6z"/>
+          </svg>
+        </a>
         <a class="btn btn-outline-secondary" href="{{ url_for('customers') }}">Clientes</a>
         <a class="btn btn-outline-secondary" href="{{ url_for('products') }}">Productos</a>
         <a class="btn btn-primary" href="{{ url_for('invoice_new') }}">Documento nuevo</a>
@@ -2302,6 +2686,7 @@ BASE_HTML = """
 
   </div>
   <div id="backup-toast" class="backup-toast"></div>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     (function () {
       const toast = document.getElementById("backup-toast");
@@ -2351,6 +2736,7 @@ def _ensure_bootstrap():
             return
         _BOOTSTRAPPED = True
     _start_backup_scheduler(interval_sec=15 * 60)
+    _start_lote_sync_scheduler(interval_sec=120)
 
 @app.before_request
 def _bootstrap_background_jobs():
@@ -2408,16 +2794,29 @@ def _find_default_cdc_and_prot() -> tuple[str, str]:
 
 def _diagnostics_dry_run() -> dict:
     results = {}
+    diag_warnings: list[str] = []
     sample_customer = {"name": "Cliente Prueba", "ruc": "7524653-8"}
-    lines = [{"description": "Servicio", "qty": 1, "price_unit": 100, "line_total": 100}]
+    lines = [
+        {"description": "Servicio", "qty": Decimal("1.5"), "price_unit": Decimal("100"), "line_total": Decimal("150"), "iva_rate": 10},
+        {"description": "Servicio 5%", "qty": Decimal("1"), "price_unit": Decimal("50"), "line_total": Decimal("50"), "iva_rate": 5},
+    ]
 
     p12_path = os.getenv("SIFEN_SIGN_P12_PATH") or os.getenv("SIFEN_P12_PATH") or os.getenv("SIFEN_CERT_PATH")
     p12_password = os.getenv("SIFEN_SIGN_P12_PASSWORD") or os.getenv("SIFEN_P12_PASSWORD") or os.getenv("SIFEN_CERT_PASSWORD")
     csc = (os.getenv("SIFEN_CSC") or "").strip()
     csc_id = (os.getenv("SIFEN_CSC_ID") or "0001").strip()
+    tim_num, _ = _config_value("timbrado_num", ["SIFEN_TIMBRADO_NUM", "SIFEN_NUM_TIMBRADO", "SIFEN_DNUMTIM"])
+    tim_fe_ini, _ = _config_value("timbrado_fe_ini", ["SIFEN_TIMBRADO_FE_INI", "SIFEN_DFEINIT"])
+    if not tim_num:
+        diag_warnings.append("timbrado_num no configurado en settings/env; se usará el valor del template.")
+    if not tim_fe_ini:
+        diag_warnings.append("timbrado_fe_ini no configurado en settings/env; se usará el valor del template.")
 
     if not (p12_path and p12_password and csc):
-        return {"error": "Faltan credenciales SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD/SIFEN_CSC"}
+        return {
+            "error": "Faltan credenciales SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD/SIFEN_CSC",
+            "warnings": diag_warnings,
+        }
 
     for doc_type in ["1", "4", "5", "6", "7"]:
         label = doc_type_label(doc_type)
@@ -2458,12 +2857,47 @@ def _diagnostics_dry_run() -> dict:
                 establishment="001",
                 point_exp="001",
             )
+            build2 = _build_invoice_xml_from_template(
+                template_path=template_path,
+                invoice_id=999100 + int(doc_type),
+                customer=sample_customer,
+                lines=lines,
+                doc_number="0000002",
+                doc_type=doc_type,
+                extra_json=extra,
+                issue_dt=datetime.now(),
+                codseg="123456789",
+                establishment="001",
+                point_exp="001",
+            )
             signed = sign_de_with_p12(build["xml_bytes"], p12_path, p12_password)
             signed_qr_text, _ = _update_qr_in_signed_xml(signed.decode("utf-8"), csc, csc_id)
             has_qr = "<dCarQR>" in signed_qr_text and "TESTQRCODE" not in signed_qr_text
-            results[label] = {"ok": True, "cdc_tail": build["cdc"][-6:], "qr_ok": has_qr}
+
+            xml_txt = build["xml_bytes"].decode("utf-8", errors="ignore")
+            qty_ok = "<dCantProSer>1.5" in xml_txt
+            cdc_changes = build["cdc"] != build2["cdc"]
+            tim_set = (_safe_get_setting("timbrado_num", "") or "").strip()
+            fe_set = (_safe_get_setting("timbrado_fe_ini", "") or "").strip()
+            tim_override_ok = True
+            if tim_set:
+                tim_override_ok = f"<dNumTim>{_zfill_digits(tim_set, 8)}</dNumTim>" in xml_txt
+            if tim_override_ok and fe_set:
+                tim_override_ok = f"<dFeIniT>{fe_set}</dFeIniT>" in xml_txt
+
+            results[label] = {
+                "ok": bool(has_qr and qty_ok and cdc_changes and tim_override_ok),
+                "cdc_tail": build["cdc"][-6:],
+                "qr_ok": has_qr,
+                "qty_decimal_ok": qty_ok,
+                "cdc_changes_between_runs": cdc_changes,
+                "timbrado_override_ok": tim_override_ok,
+                "warnings": build.get("warnings", []),
+            }
         except Exception as exc:
-            results[label] = {"ok": False, "error": str(exc)}
+            results[label] = {"ok": False, "error": str(exc), "warnings": diag_warnings}
+    if diag_warnings:
+        results["_warnings"] = diag_warnings
     return results
 
 def _diagnostics_consult_lote(env: str, prot: str) -> dict:
@@ -2564,6 +2998,10 @@ def settings_page():
         default_pun = (request.form.get("default_point_exp") or "").strip()
         available_pun = (request.form.get("available_point_exp") or "").strip()
         default_env = (request.form.get("default_env") or "").strip().lower()
+        timbrado_num = (request.form.get("timbrado_num") or "").strip()
+        timbrado_fe_ini = (request.form.get("timbrado_fe_ini") or "").strip()
+        est_cfg = (request.form.get("est") or "").strip()
+        pun_cfg = (request.form.get("pun") or "").strip()
         set_setting("default_signed_xml_path", default_path)
         set_setting("template_xml_path", template_path)
         set_setting("template_xml_path_factura", template_factura)
@@ -2580,6 +3018,10 @@ def settings_page():
             set_setting("available_point_exp", available_pun)
         if default_env in ("test", "prod"):
             set_setting("default_env", default_env)
+        set_setting("timbrado_num", _zfill_digits(timbrado_num, 8))
+        set_setting("timbrado_fe_ini", timbrado_fe_ini)
+        set_setting("est", _zfill_digits(est_cfg, 3))
+        set_setting("pun", _zfill_digits(pun_cfg, 3))
         return redirect(url_for("settings_page"))
 
     default_path = get_setting("default_signed_xml_path", "")
@@ -2594,6 +3036,10 @@ def settings_page():
     default_pun = get_setting("default_point_exp", "001")
     available_pun = get_setting("available_point_exp", "001,002,003")
     default_env = get_setting("default_env", "prod") or "prod"
+    timbrado_num = get_setting("timbrado_num", "")
+    timbrado_fe_ini = get_setting("timbrado_fe_ini", "")
+    est_cfg = get_setting("est", "")
+    pun_cfg = get_setting("pun", "")
 
     if not default_path:
 
@@ -2634,6 +3080,14 @@ def settings_page():
           <input class="form-control mono" name="default_point_exp" value="{{ default_pun }}" placeholder="001">
           <label class="form-label mt-3">available_point_exp (coma separada)</label>
           <input class="form-control mono" name="available_point_exp" value="{{ available_pun }}" placeholder="001,002,003">
+          <label class="form-label mt-3">timbrado_num (sobrescribe template)</label>
+          <input class="form-control mono" name="timbrado_num" value="{{ timbrado_num }}" placeholder="18578288">
+          <label class="form-label mt-3">timbrado_fe_ini (YYYY-MM-DD, sobrescribe template)</label>
+          <input class="form-control mono" name="timbrado_fe_ini" value="{{ timbrado_fe_ini }}" placeholder="2026-01-14">
+          <label class="form-label mt-3">est (3 dígitos, opcional)</label>
+          <input class="form-control mono" name="est" value="{{ est_cfg }}" placeholder="001">
+          <label class="form-label mt-3">pun (3 dígitos, opcional)</label>
+          <input class="form-control mono" name="pun" value="{{ pun_cfg }}" placeholder="001">
           <label class="form-label mt-3">default_env (test/prod)</label>
           <input class="form-control mono" name="default_env" value="{{ default_env }}" placeholder="prod">
           <button class="btn btn-primary mt-3" type="submit">Guardar</button>
@@ -2657,8 +3111,26 @@ def settings_page():
         default_est=default_est,
         default_pun=default_pun,
         available_pun=available_pun,
+        timbrado_num=timbrado_num,
+        timbrado_fe_ini=timbrado_fe_ini,
+        est_cfg=est_cfg,
+        pun_cfg=pun_cfg,
         default_env=default_env,
     )
+
+@app.route("/assets/issuer-logo")
+def issuer_logo():
+    path = (os.getenv("SIFEN_ISSUER_LOGO_PATH") or "").strip()
+    if not path:
+        path = str(_repo_root() / "temp" / "industria-feris-isotipo.jpg")
+    p = Path(path)
+    if not p.is_absolute():
+        p = (_repo_root() / p).resolve()
+    if not p.exists():
+        abort(404)
+    resp = send_file(p, mimetype="image/jpeg", as_attachment=False)
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
 
 @app.route("/diagnostics", methods=["GET"])
 def diagnostics_page():
@@ -2828,6 +3300,16 @@ def invoices():
         params,
     ).fetchone()
     total = int(total_row["n"])
+    pending_row = con.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM invoices
+        WHERE status IN ('QUEUED','SENT','CONFIRMING')
+          AND sifen_prot_cons_lote IS NOT NULL
+          AND sifen_prot_cons_lote != ''
+        """
+    ).fetchone()
+    pending_total = int(pending_row["n"])
 
     rows = con.execute(
         f"""
@@ -2871,7 +3353,10 @@ def invoices():
         <div class="card">
           <div class="card-body">
             <div class="d-flex justify-content-between align-items-center mb-2">
-              <div class="text-muted">Total: <b>{{total}}</b></div>
+              <div class="text-muted">
+                Total: <b>{{total}}</b>
+                <span class="ms-2">Sin confirmar: <b>{{pending_total}}</b></span>
+              </div>
               <div class="text-muted">Página <b>{{page}}</b> / {{pages}}</div>
             </div>
 
@@ -2899,7 +3384,12 @@ def invoices():
                       <td class="mono">{{r.customer_ruc or "—"}}</td>
                       <td>{{ doc_type_label(r.doc_type) }}</td>
                       <td class="mono">{{"{:,}".format(r.total).replace(",", ".")}} {{r.currency}}</td>
-                      <td>{{ badge(r.status)|safe }}</td>
+                      <td>
+                        {{ badge(r.status)|safe }}
+                        {% if r.status in ("QUEUED","SENT","CONFIRMING") and r.sifen_prot_cons_lote %}
+                          <div class="small text-warning">Sin confirmar</div>
+                        {% endif %}
+                      </td>
                       <td class="nowrap">{{ yn(r.queued_at or r.sent_at) }}</td>
                       <td class="nowrap">
                         {% if r.status == "CONFIRMED_OK" %}✅{% elif r.status=="CONFIRMED_REJECTED" %}❌{% else %}—{% endif %}
@@ -2938,6 +3428,7 @@ def invoices():
         q=q,
         customer_id=customer_id,
         total=total,
+        pending_total=pending_total,
         page=page,
         pages=pages,
         yn=yn,
@@ -2958,6 +3449,7 @@ def invoice_new():
         con.commit()
 
     customers = con.execute("SELECT id, name, ruc FROM customers ORDER BY name ASC").fetchall()
+    products = con.execute("SELECT id, sku, name, unit, price_unit FROM products ORDER BY name ASC").fetchall()
     default_est = get_setting("default_establishment", "001")
     default_pun = get_setting("default_point_exp", "001")
     available_pun = [p.strip() for p in (get_setting("available_point_exp", "001,002,003") or "").split(",") if p.strip()]
@@ -2989,6 +3481,7 @@ def invoice_new():
         descs = request.form.getlist("description")
         qtys = request.form.getlist("qty")
         prices = request.form.getlist("price_unit")
+        product_ids = request.form.getlist("product_id")
 
         inserted = 0
         max_len = max(len(descs), len(qtys), len(prices))
@@ -2998,10 +3491,12 @@ def invoice_new():
                 continue
             qty = _parse_int(qtys[idx] if idx < len(qtys) else None, 1)
             price_unit = _parse_int(prices[idx] if idx < len(prices) else None, 0)
+            prod_id_raw = (product_ids[idx] if idx < len(product_ids) else "").strip()
+            prod_id = int(prod_id_raw) if prod_id_raw.isdigit() else None
             line_total = qty * price_unit
             con.execute(
-                "INSERT INTO invoice_lines (invoice_id, description, qty, price_unit, line_total) VALUES (?,?,?,?,?)",
-                (invoice_id, desc, qty, price_unit, line_total),
+                "INSERT INTO invoice_lines (invoice_id, product_id, description, qty, price_unit, line_total) VALUES (?,?,?,?,?,?)",
+                (invoice_id, prod_id, desc, qty, price_unit, line_total),
             )
             inserted += 1
 
@@ -3011,8 +3506,8 @@ def invoice_new():
             price_unit = 0
             line_total = qty * price_unit
             con.execute(
-                "INSERT INTO invoice_lines (invoice_id, description, qty, price_unit, line_total) VALUES (?,?,?,?,?)",
-                (invoice_id, desc, qty, price_unit, line_total),
+                "INSERT INTO invoice_lines (invoice_id, product_id, description, qty, price_unit, line_total) VALUES (?,?,?,?,?,?)",
+                (invoice_id, None, desc, qty, price_unit, line_total),
             )
         con.commit()
         recompute_invoice_totals(invoice_id)
@@ -3027,11 +3522,12 @@ def invoice_new():
             <form method="post" class="row g-3">
               <div class="col-md-6">
                 <label class="form-label">Cliente</label>
-                <select class="form-select" name="customer_id" required>
+                <select class="form-select" name="customer_id" id="customer-select" required>
                   {% for c in customers %}
                     <option value="{{c.id}}">{{c.name}} ({{c.ruc or "sin RUC"}})</option>
                   {% endfor %}
                 </select>
+                <button class="btn btn-sm btn-outline-primary mt-2" type="button" data-bs-toggle="modal" data-bs-target="#customerModal">+ Agregar cliente nuevo</button>
               </div>
               <div class="col-md-6">
                 <label class="form-label">Tipo de documento</label>
@@ -3063,7 +3559,17 @@ def invoice_new():
                 <div class="row g-3 item-row align-items-end">
                   <div class="col-md-5">
                     <label class="form-label">Descripción</label>
-                    <input class="form-control" name="description" value="Servicio" required>
+                    {% if products %}
+                      <select class="form-select product-select" name="description" required>
+                        <option value="" selected>Seleccionar producto/servicio...</option>
+                        {% for p in products %}
+                          <option value="{{p.name}}" data-id="{{p.id}}" data-price="{{p.price_unit}}">{{p.name}}{% if p.sku %} ({{p.sku}}){% endif %}</option>
+                        {% endfor %}
+                      </select>
+                    {% else %}
+                      <input class="form-control" name="description" value="Servicio" required>
+                    {% endif %}
+                    <input type="hidden" name="product_id" value="">
                   </div>
                   <div class="col-md-2">
                     <label class="form-label">Cantidad</label>
@@ -3083,6 +3589,7 @@ def invoice_new():
               </div>
               <div class="col-12">
                 <button class="btn btn-sm btn-outline-secondary" type="button" id="add-item">+ Agregar ítem</button>
+                <button class="btn btn-sm btn-outline-primary ms-2" type="button" data-bs-toggle="modal" data-bs-target="#productModal">+ Agregar producto nuevo</button>
               </div>
 
               <div class="col-12 d-flex gap-2">
@@ -3093,6 +3600,79 @@ def invoice_new():
             <div class="text-muted small mt-3">
               Tip: podés agregar varias líneas con el botón “Agregar ítem”.
             </div>
+
+            <div class="modal fade" id="customerModal" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog">
+                <div class="modal-content">
+                  <form id="quick-customer-form">
+                    <div class="modal-header">
+                      <h5 class="modal-title">Agregar cliente</h5>
+                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                      <div class="mb-2">
+                        <label class="form-label">Nombre *</label>
+                        <input class="form-control" name="name" required>
+                      </div>
+                      <div class="mb-2">
+                        <label class="form-label">RUC</label>
+                        <input class="form-control mono" name="ruc" placeholder="4554737-8">
+                      </div>
+                      <div class="mb-2">
+                        <label class="form-label">Email</label>
+                        <input class="form-control" name="email" type="email">
+                      </div>
+                      <div class="mb-2">
+                        <label class="form-label">Teléfono</label>
+                        <input class="form-control" name="phone">
+                      </div>
+                      <div class="text-danger small d-none" id="quick-customer-error"></div>
+                    </div>
+                    <div class="modal-footer">
+                      <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                      <button type="submit" class="btn btn-primary">Guardar</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+            <div class="modal fade" id="productModal" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog">
+                <div class="modal-content">
+                  <form id="quick-product-form">
+                    <div class="modal-header">
+                      <h5 class="modal-title">Agregar producto/servicio</h5>
+                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                      <div class="mb-2">
+                        <label class="form-label">Nombre *</label>
+                        <input class="form-control" name="name" required>
+                      </div>
+                      <div class="mb-2">
+                        <label class="form-label">SKU</label>
+                        <input class="form-control" name="sku">
+                      </div>
+                      <div class="mb-2">
+                        <label class="form-label">Unidad</label>
+                        <input class="form-control" name="unit" value="UN">
+                      </div>
+                      <div class="mb-2">
+                        <label class="form-label">Precio Unit. (PYG)</label>
+                        <input class="form-control mono" name="price_unit" placeholder="1.234.567">
+                      </div>
+                      <div class="text-danger small d-none" id="quick-product-error"></div>
+                    </div>
+                    <div class="modal-footer">
+                      <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                      <button type="submit" class="btn btn-primary">Guardar</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
             <script>
               (function () {
                 const container = document.getElementById("items-container");
@@ -3106,6 +3686,10 @@ def invoice_new():
                     if (inp.name === "description") inp.value = "";
                     if (inp.name === "qty") inp.value = "1";
                     if (inp.name === "price_unit") inp.value = "0";
+                    if (inp.name === "product_id") inp.value = "";
+                  });
+                  clone.querySelectorAll("select").forEach((sel) => {
+                    if (sel.name === "description") sel.value = "";
                   });
                   container.appendChild(clone);
                 });
@@ -3120,11 +3704,130 @@ def invoice_new():
                       if (inp.name === "description") inp.value = "";
                       if (inp.name === "qty") inp.value = "1";
                       if (inp.name === "price_unit") inp.value = "0";
+                      if (inp.name === "product_id") inp.value = "";
+                    });
+                    row.querySelectorAll("select").forEach((sel) => {
+                      if (sel.name === "description") sel.value = "";
                     });
                     return;
                   }
                   row.remove();
                 });
+
+                container.addEventListener("change", function (ev) {
+                  const sel = ev.target.closest(".product-select");
+                  if (!sel) return;
+                  const row = sel.closest(".item-row");
+                  if (!row) return;
+                  const opt = sel.selectedOptions[0];
+                  if (!opt) return;
+                  const price = opt.getAttribute("data-price") || "";
+                  const pid = opt.getAttribute("data-id") || "";
+                  const priceInput = row.querySelector('input[name="price_unit"]');
+                  const pidInput = row.querySelector('input[name="product_id"]');
+                  if (priceInput && price) priceInput.value = price;
+                  if (pidInput) pidInput.value = pid;
+                });
+
+                const quickForm = document.getElementById("quick-product-form");
+                const errBox = document.getElementById("quick-product-error");
+                if (quickForm) {
+                  quickForm.addEventListener("submit", async function (ev) {
+                    ev.preventDefault();
+                    if (errBox) { errBox.classList.add("d-none"); errBox.textContent = ""; }
+                    const data = new FormData(quickForm);
+                    const payload = {
+                      name: data.get("name"),
+                      sku: data.get("sku"),
+                      unit: data.get("unit"),
+                      price_unit: data.get("price_unit"),
+                    };
+                    try {
+                      const res = await fetch("{{ url_for('product_quick_add') }}", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                      });
+                      const out = await res.json();
+                      if (!res.ok) {
+                        throw new Error(out.error || "Error al crear producto");
+                      }
+                      const optionLabel = out.sku ? `${out.name} (${out.sku})` : out.name;
+                      document.querySelectorAll(".product-select").forEach((sel) => {
+                        const opt = document.createElement("option");
+                        opt.value = out.name;
+                        opt.textContent = optionLabel;
+                        opt.setAttribute("data-id", out.id);
+                        opt.setAttribute("data-price", out.price_unit);
+                        sel.appendChild(opt);
+                      });
+                      const rows = container.querySelectorAll(".item-row");
+                      const row = rows[rows.length - 1];
+                      const sel = row ? row.querySelector(".product-select") : null;
+                      if (sel) {
+                        sel.value = out.name;
+                        sel.dispatchEvent(new Event("change"));
+                      }
+                      quickForm.reset();
+                      if (out.unit) quickForm.querySelector('input[name="unit"]').value = out.unit;
+                      const modalEl = document.getElementById("productModal");
+                      if (modalEl) {
+                        const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+                        modal.hide();
+                      }
+                    } catch (e) {
+                      if (errBox) {
+                        errBox.textContent = e.message || "Error";
+                        errBox.classList.remove("d-none");
+                      }
+                    }
+                  });
+                }
+
+                const quickCustomerForm = document.getElementById("quick-customer-form");
+                const customerErr = document.getElementById("quick-customer-error");
+                const customerSelect = document.getElementById("customer-select");
+                if (quickCustomerForm && customerSelect) {
+                  quickCustomerForm.addEventListener("submit", async function (ev) {
+                    ev.preventDefault();
+                    if (customerErr) { customerErr.classList.add("d-none"); customerErr.textContent = ""; }
+                    const data = new FormData(quickCustomerForm);
+                    const payload = {
+                      name: data.get("name"),
+                      ruc: data.get("ruc"),
+                      email: data.get("email"),
+                      phone: data.get("phone"),
+                    };
+                    try {
+                      const res = await fetch("{{ url_for('customer_quick_add') }}", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                      });
+                      const out = await res.json();
+                      if (!res.ok) {
+                        throw new Error(out.error || "Error al crear cliente");
+                      }
+                      const label = out.ruc ? `${out.name} (${out.ruc})` : out.name;
+                      const opt = document.createElement("option");
+                      opt.value = out.id;
+                      opt.textContent = label;
+                      customerSelect.appendChild(opt);
+                      customerSelect.value = String(out.id);
+                      quickCustomerForm.reset();
+                      const modalEl = document.getElementById("customerModal");
+                      if (modalEl) {
+                        const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+                        modal.hide();
+                      }
+                    } catch (e) {
+                      if (customerErr) {
+                        customerErr.textContent = e.message || "Error";
+                        customerErr.classList.remove("d-none");
+                      }
+                    }
+                  });
+                }
               })();
             </script>
           </div>
@@ -3134,6 +3837,7 @@ def invoice_new():
         default_est=default_est,
         default_pun=default_pun,
         available_pun=available_pun,
+        products=products,
     )
     return render_template_string(BASE_HTML, title="Factura nueva", db_path=DB_PATH, body=body)
 
@@ -3242,6 +3946,13 @@ def invoice_detail(invoice_id: int):
                   Último código: <span class="mono">{{inv.last_sifen_code or "—"}}</span><br>
                   Último mensaje: {{inv.last_sifen_msg or "—"}}
                 </div>
+                <form method="post" action="{{ url_for('invoice_resync', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
+                  <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
+                    <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
+                    <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
+                  </select>
+                  <button class="btn btn-sm btn-outline-primary" type="submit">Re-sincronizar con SIFEN</button>
+                </form>
                 <form method="post" action="{{ url_for('invoice_consult_cdc', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
                   <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
                     <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
@@ -3865,8 +4576,8 @@ def invoice_enqueue(invoice_id: int):
         abort(400, "Confirmación requerida para PROD (marcá la casilla).")
     con = get_db()
     con.execute(
-        "UPDATE invoices SET status=?, queued_at=? WHERE id=?",
-        ("QUEUED", now_iso(), invoice_id),
+        "UPDATE invoices SET status=?, queued_at=?, sifen_env=? WHERE id=?",
+        ("QUEUED", now_iso(), env, invoice_id),
     )
     con.commit()
     _enqueue_invoice(invoice_id, env)
@@ -4085,6 +4796,9 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
     ).fetchone()
     if not inv:
         abort(404)
+
+    con.execute("UPDATE invoices SET sifen_env=? WHERE id=?", (env, invoice_id))
+    con.commit()
 
     # si ya fue procesado por SIFEN, no reenviar
     if inv["status"] in ("CONFIRMED_OK", "CONFIRMED_REJECTED"):
@@ -4454,8 +5168,8 @@ def invoice_send_test(invoice_id: int):
 
     prot_store = prot or inv["sifen_prot_cons_lote"]
     con.execute(
-        "UPDATE invoices SET status=?, sent_at=COALESCE(sent_at,?), sifen_prot_cons_lote=?, last_sifen_code=?, last_sifen_msg=?, last_artifacts_dir=COALESCE(?, last_artifacts_dir), source_xml_path=COALESCE(?, source_xml_path) WHERE id=?",
-        (new_status, sent_at, prot_store, dCodRes, dMsgRes, last_art_dir or None, source_xml_match or None, invoice_id)
+        "UPDATE invoices SET status=?, sent_at=COALESCE(sent_at,?), sifen_env=?, sifen_prot_cons_lote=?, last_sifen_code=?, last_sifen_msg=?, last_artifacts_dir=COALESCE(?, last_artifacts_dir), source_xml_path=COALESCE(?, source_xml_path) WHERE id=?",
+        (new_status, sent_at, "test", prot_store, dCodRes, dMsgRes, last_art_dir or None, source_xml_match or None, invoice_id)
     )
     con.commit()
 
@@ -4476,6 +5190,9 @@ def invoice_consult_test(invoice_id: int):
     inv = con.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
     if not inv:
         abort(404)
+
+    con.execute("UPDATE invoices SET sifen_env=? WHERE id=?", ("test", invoice_id))
+    con.commit()
 
     prot = (inv["sifen_prot_cons_lote"] or "").strip()
     if not prot:
@@ -4542,11 +5259,46 @@ def invoice_consult_cdc(invoice_id: int):
         est = "CDC encontrado"
 
     con.execute(
-        "UPDATE invoices SET last_sifen_code=?, last_sifen_msg=?, last_sifen_prot_aut=COALESCE(?, last_sifen_prot_aut), last_sifen_est=COALESCE(?, last_sifen_est) WHERE id=?",
-        (dCodRes or None, dMsgRes or None, prot_aut or None, est or None, invoice_id),
+        "UPDATE invoices SET sifen_env=?, last_sifen_code=?, last_sifen_msg=?, last_sifen_prot_aut=COALESCE(?, last_sifen_prot_aut), last_sifen_est=COALESCE(?, last_sifen_est) WHERE id=?",
+        (env, dCodRes or None, dMsgRes or None, prot_aut or None, est or None, invoice_id),
     )
     con.commit()
 
+    return redirect(url_for("invoice_detail", invoice_id=invoice_id))
+
+@app.route("/invoice/<int:invoice_id>/resync", methods=["POST"])
+def invoice_resync(invoice_id: int):
+    init_db()
+    con = get_db()
+    inv = con.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+    if not inv:
+        abort(404)
+
+    env = (request.form.get("env") or inv["sifen_env"] or get_setting("default_env", "prod") or "prod").strip().lower()
+    if env not in ("test", "prod"):
+        env = "prod"
+    con.execute("UPDATE invoices SET sifen_env=? WHERE id=?", (env, invoice_id))
+    con.commit()
+
+    prot = (inv["sifen_prot_cons_lote"] or "").strip()
+    if prot:
+        new_status = _consult_lote_and_update(
+            invoice_id=invoice_id,
+            env=env,
+            prot=prot,
+            rel_signed=inv["source_xml_path"] or None,
+            prefer_art_dir=inv["last_artifacts_dir"] or None,
+            attempts=1,
+            sleep_between=0,
+        )
+        if new_status == "CONFIRMING":
+            _schedule_lote_poll(invoice_id, env, prot, rel_signed=inv["source_xml_path"] or None)
+        return redirect(url_for("invoice_detail", invoice_id=invoice_id))
+
+    cdc = _extract_cdc_from_xml_path(inv["source_xml_path"] or "")
+    if not cdc:
+        abort(400, "No hay dProtConsLote ni CDC para sincronizar.")
+    _consult_cdc_and_update(invoice_id, env, cdc)
     return redirect(url_for("invoice_detail", invoice_id=invoice_id))
 
 @app.route("/invoice/<int:invoice_id>/refresh_soap", methods=["POST"])
@@ -4857,6 +5609,35 @@ def customer_new():
     return render_template_string(BASE_HTML, title="Agregar cliente", db_path=DB_PATH, body=body)
 
 
+@app.route("/customer/quick_add", methods=["POST"])
+def customer_quick_add():
+    init_db()
+    con = get_db()
+    payload = request.get_json(silent=True) or request.form or {}
+
+    name = (payload.get("name") or "").strip()
+    ruc = (payload.get("ruc") or "").strip() or None
+    email = (payload.get("email") or "").strip() or None
+    phone = (payload.get("phone") or "").strip() or None
+
+    if not name:
+        return jsonify({"error": "Nombre es obligatorio"}), 400
+
+    cur = con.execute(
+        "INSERT INTO customers (name, ruc, email, phone, created_at) VALUES (?,?,?,?,?)",
+        (name, ruc, email, phone, now_iso()),
+    )
+    con.commit()
+
+    return jsonify({
+        "id": cur.lastrowid,
+        "name": name,
+        "ruc": ruc,
+        "email": email,
+        "phone": phone,
+    })
+
+
 @app.route("/customer/<int:customer_id>/edit", methods=["GET", "POST"])
 def customer_edit(customer_id: int):
     init_db()
@@ -4976,6 +5757,39 @@ def product_new():
         """
     )
     return render_template_string(BASE_HTML, title="Agregar producto/servicio", db_path=DB_PATH, body=body)
+
+@app.route("/product/quick_add", methods=["POST"])
+def product_quick_add():
+    init_db()
+    con = get_db()
+    payload = request.get_json(silent=True) or request.form or {}
+
+    sku = (payload.get("sku") or "").strip() or None
+    name = (payload.get("name") or "").strip()
+    unit = (payload.get("unit") or "").strip() or "UN"
+    price_raw = (payload.get("price_unit") or "").strip()
+
+    if not name:
+        return jsonify({"error": "Nombre es obligatorio"}), 400
+
+    try:
+        price_unit = _parse_price_unit(price_raw)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+
+    cur = con.execute(
+        "INSERT INTO products (sku, name, unit, price_unit, created_at) VALUES (?,?,?,?,?)",
+        (sku, name, unit, price_unit, now_iso()),
+    )
+    con.commit()
+
+    return jsonify({
+        "id": cur.lastrowid,
+        "sku": sku,
+        "name": name,
+        "unit": unit,
+        "price_unit": price_unit,
+    })
 
 
 @app.route("/product/<int:product_id>/edit", methods=["GET", "POST"])

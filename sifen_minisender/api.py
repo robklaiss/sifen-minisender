@@ -19,6 +19,7 @@ from requests.adapters import HTTPAdapter
 from lxml import etree
 
 SIFEN_NS = "http://ekuatia.set.gov.py/sifen/xsd"
+XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 SOAP12_NS = "http://www.w3.org/2003/05/soap-envelope"
 
 DEFAULT_RECIBE_LOTE_ENDPOINTS = {
@@ -335,13 +336,38 @@ def _analyze_consulta_lote_wsdl(wsdl_bytes: bytes):
     return address_location, body_ns, body_local, soap_action, op_name
 
 
-def _build_consulta_lote_soap_envelope(body_ns: str, body_localname: str, prot: str) -> bytes:
+def _xsd_url_from_consulta_endpoint(endpoint: str) -> str:
+    """
+    Consulta-lote suele rechazar con 0160 si no se informa schemaLocation.
+    Construye una URL de XSD a partir del endpoint base.
+    """
+    u = (endpoint or "").strip()
+    if not u:
+        return ""
+    if "?wsdl" in u.lower():
+        u = u.split("?", 1)[0]
+    if "?" in u:
+        return u + "&xsd=1"
+    return u + "?xsd=1"
+
+
+def _build_consulta_lote_soap_envelope(
+    body_ns: str,
+    body_localname: str,
+    prot: str,
+    schema_location: str = "",
+) -> bytes:
     ns_for_body = body_ns or SIFEN_NS
     did = _make_did_15()
     envelope = etree.Element(etree.QName(SOAP12_NS, "Envelope"), nsmap={"soap": SOAP12_NS})
     etree.SubElement(envelope, etree.QName(SOAP12_NS, "Header"))
     body = etree.SubElement(envelope, etree.QName(SOAP12_NS, "Body"))
-    root = etree.Element(etree.QName(ns_for_body, body_localname), nsmap={None: ns_for_body})
+    root = etree.Element(
+        etree.QName(ns_for_body, body_localname),
+        nsmap={None: ns_for_body, "xsi": XSI_NS},
+    )
+    if schema_location:
+        root.set(etree.QName(XSI_NS, "schemaLocation"), schema_location)
     d_id = etree.SubElement(root, etree.QName(ns_for_body, "dId"))
     d_id.text = did
     dprot = etree.SubElement(root, etree.QName(ns_for_body, "dProtConsLote"))
@@ -350,14 +376,19 @@ def _build_consulta_lote_soap_envelope(body_ns: str, body_localname: str, prot: 
     return etree.tostring(envelope, xml_declaration=True, encoding="UTF-8", pretty_print=False)
 
 
-def _build_consulta_lote_soap_fallback(prot: str) -> bytes:
+def _build_consulta_lote_soap_fallback(prot: str, schema_location: str = "") -> bytes:
     did = _make_did_15()
 
     envelope = etree.Element(etree.QName(SOAP12_NS, "Envelope"), nsmap={"soap": SOAP12_NS})
     etree.SubElement(envelope, etree.QName(SOAP12_NS, "Header"))
     body = etree.SubElement(envelope, etree.QName(SOAP12_NS, "Body"))
 
-    root = etree.Element(etree.QName(SIFEN_NS, "rEnviConsLoteDe"), nsmap={None: SIFEN_NS})
+    root = etree.Element(
+        etree.QName(SIFEN_NS, "rEnviConsLoteDe"),
+        nsmap={None: SIFEN_NS, "xsi": XSI_NS},
+    )
+    if schema_location:
+        root.set(etree.QName(XSI_NS, "schemaLocation"), schema_location)
     d_id = etree.SubElement(root, etree.QName(SIFEN_NS, "dId"))
     d_id.text = did
     dprot = etree.SubElement(root, etree.QName(SIFEN_NS, "dProtConsLote"))
@@ -679,11 +710,6 @@ def consult(
                 fallback_wsdl = True
                 print(f"WARN consult fallback sin WSDL: {wsdl_url!r}: {exc}", file=sys.stderr)
 
-    if fallback_wsdl or not wsdl_bytes:
-        soap_bytes = _build_consulta_lote_soap_fallback(prot_value)
-    else:
-        soap_bytes = _build_consulta_lote_soap_envelope(body_ns, body_local, prot_value)
-
     endpoint_from_wsdl = address_from_wsdl
     if wsdl_source == "local" and env_norm == "prod":
         use_wsdl_address = (os.getenv("SIFEN_USE_WSDL_ADDRESS") or "").strip().lower() in ("1", "true", "yes")
@@ -697,6 +723,25 @@ def consult(
 
     if not endpoint:
         raise SystemExit("ERROR: no se pudo determinar endpoint de consulta-lote")
+
+    # Consulta-lote (v150) suele requerir schemaLocation para evitar 0160.
+    schema_loc = ""
+    xsd_url = _xsd_url_from_consulta_endpoint(endpoint)
+    if xsd_url:
+        schema_loc = f"{SIFEN_NS} {xsd_url}"
+
+    if fallback_wsdl or not wsdl_bytes:
+        soap_bytes = _build_consulta_lote_soap_fallback(
+            prot_value,
+            schema_location=schema_loc,
+        )
+    else:
+        soap_bytes = _build_consulta_lote_soap_envelope(
+            body_ns,
+            body_local,
+            prot_value,
+            schema_location=schema_loc,
+        )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if artifacts_dir is not None:

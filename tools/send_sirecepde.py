@@ -720,6 +720,158 @@ def _root_info(xml_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
     except Exception:
         return None, None
 
+
+_QR_PLACEHOLDER_RE = re.compile(r"(TEST|PLACEHOLDER)", re.IGNORECASE)
+
+
+def _is_qr_placeholder(value: Optional[str]) -> bool:
+    """Detecta valores dummy de dCarQR que deben bloquear envío."""
+    txt = (value or "").strip()
+    if not txt:
+        return True
+    return bool(_QR_PLACEHOLDER_RE.search(txt))
+
+
+def _qr_base_url_for_env(env: str) -> str:
+    override = (os.getenv("SIFEN_QR_BASE_URL") or "").strip()
+    if override:
+        return override.rstrip("?")
+    return (
+        "https://ekuatia.set.gov.py/consultas/qr"
+        if (env or "").strip().lower() == "prod"
+        else "https://www.ekuatia.set.gov.py/consultas-test/qr"
+    )
+
+
+def _first_text_by_local(root: etree._Element, path_expr: str, default: str = "") -> str:
+    """Obtiene texto del primer nodo encontrado via XPath local-name()."""
+    try:
+        nodes = root.xpath(path_expr)
+    except Exception:
+        nodes = []
+    if not nodes:
+        return default
+    node = nodes[0]
+    text = ""
+    if hasattr(node, "text") and node.text:
+        text = node.text.strip()
+    else:
+        text = str(node).strip()
+    return text if text else default
+
+
+def _update_qr_in_signed_rde_tree(
+    rde_root: etree._Element,
+    *,
+    csc: str,
+    csc_id: str,
+    env: str,
+) -> Dict[str, str]:
+    """
+    Genera y actualiza dCarQR en un rDE YA firmado.
+    Usa los campos requeridos por SET y el DigestValue final de la firma.
+    """
+    de_nodes = rde_root.xpath(".//*[local-name()='DE']")
+    if not de_nodes:
+        raise RuntimeError("No se encontró <DE> para generar dCarQR.")
+    cdc = (de_nodes[0].get("Id") or de_nodes[0].get("id") or "").strip()
+    if not cdc:
+        raise RuntimeError("El <DE> firmado no tiene atributo Id (CDC).")
+
+    dfe = _first_text_by_local(
+        rde_root,
+        ".//*[local-name()='gDatGralOpe']/*[local-name()='dFeEmiDE']",
+    )
+    if not dfe:
+        raise RuntimeError("No se encontró dFeEmiDE para generar dCarQR.")
+    dfe_hex = dfe.encode("utf-8").hex()
+
+    ruc_rec = _first_text_by_local(
+        rde_root,
+        ".//*[local-name()='gDatRec']/*[local-name()='dRucRec']",
+    )
+    if ruc_rec:
+        id_rec = re.sub(r"\D", "", ruc_rec)
+    else:
+        id_rec = _first_text_by_local(
+            rde_root,
+            ".//*[local-name()='gDatRec']/*[local-name()='dNumIDRec']",
+        )
+    if not id_rec:
+        raise RuntimeError("No se encontró dRucRec/dNumIDRec para generar dCarQR.")
+
+    tot_ope = _first_text_by_local(
+        rde_root,
+        ".//*[local-name()='gTotSub']/*[local-name()='dTotGralOpe']",
+    ) or _first_text_by_local(
+        rde_root,
+        ".//*[local-name()='gTotSub']/*[local-name()='dTotOpe']",
+        default="0",
+    )
+    tot_iva = _first_text_by_local(
+        rde_root,
+        ".//*[local-name()='gTotSub']/*[local-name()='dTotIVA']",
+        default="0",
+    )
+
+    items_nodes = rde_root.xpath(".//*[local-name()='gDtipDE']//*[local-name()='gCamItem']")
+    citems = str(len(items_nodes))
+
+    digest = _first_text_by_local(rde_root, ".//*[local-name()='DigestValue']")
+    if not digest:
+        raise RuntimeError("No se encontró DigestValue final para generar dCarQR.")
+    digest_hex = digest.encode("utf-8").hex()
+
+    nversion = "150"
+    params = (
+        f"nVersion={nversion}"
+        f"&Id={cdc}"
+        f"&dFeEmiDE={dfe_hex}"
+        f"&dRucRec={id_rec}"
+        f"&dTotGralOpe={tot_ope}"
+        f"&dTotIVA={tot_iva}"
+        f"&cItems={citems}"
+        f"&DigestValue={digest_hex}"
+        f"&IdCSC={csc_id}"
+    )
+    hash_hex = hashlib.sha256((params + csc).encode("utf-8")).hexdigest()
+    qr_url = f"{_qr_base_url_for_env(env)}?{params}&cHashQR={hash_hex}"
+
+    gcam_nodes = rde_root.xpath("./*[local-name()='gCamFuFD']")
+    if gcam_nodes:
+        gcam = gcam_nodes[0]
+    else:
+        gcam = etree.SubElement(rde_root, etree.QName(SIFEN_NS, "gCamFuFD"))
+
+    dcar_nodes = gcam.xpath("./*[local-name()='dCarQR']")
+    if dcar_nodes:
+        dcar = dcar_nodes[0]
+    else:
+        dcar = etree.SubElement(gcam, etree.QName(SIFEN_NS, "dCarQR"))
+    dcar.text = qr_url
+
+    return {
+        "qr_url": qr_url,
+        "cdc": cdc,
+        "dFeEmiDE": dfe,
+        "dRucRec": id_rec,
+        "dTotGralOpe": tot_ope,
+        "dTotIVA": tot_iva,
+        "cItems": citems,
+        "digest": digest,
+        "idCSC": csc_id,
+        "cHashQR": hash_hex,
+    }
+
+
+def _extract_first_dcarqr_from_lote(lote_xml_bytes: bytes) -> str:
+    """Extrae dCarQR desde lote.xml para logging/guardrails."""
+    try:
+        root = etree.fromstring(lote_xml_bytes)
+    except Exception:
+        return ""
+    return _first_text_by_local(root, ".//*[local-name()='dCarQR']", default="")
+
 # Registrar namespaces para que ET use default namespace en lugar de prefijos
 # Esto ayuda a que la serialización use xmlns="..." en lugar de xmlns:ns0="..."
 # Registrar namespace default (lxml puede fallar con prefix "")
@@ -3267,6 +3419,7 @@ def build_and_sign_lote_from_xml(
     xml_bytes: bytes,
     cert_path: str,
     cert_password: str,
+    env: str = "test",
     return_debug: bool = False,
     dump_http: bool = False,
     artifacts_dir: Optional[Path] = None,
@@ -3814,6 +3967,22 @@ def build_and_sign_lote_from_xml(
     
     # 9. Re-parsear el rDE firmado (ya validado)
     rde_signed = etree.fromstring(rde_signed_bytes, parser=parser)
+
+    # 9.1 Regenerar dCarQR usando campos del XML FIRMADO (incluye DigestValue final)
+    qr_csc = (os.getenv("SIFEN_CSC") or "").strip()
+    qr_csc_id = (os.getenv("SIFEN_CSC_ID") or "1").strip()
+    if not qr_csc:
+        raise RuntimeError("No se encontró SIFEN_CSC. No se puede generar dCarQR real.")
+
+    qr_debug = _update_qr_in_signed_rde_tree(
+        rde_signed,
+        csc=qr_csc,
+        csc_id=qr_csc_id,
+        env=env,
+    )
+    qr_url = (qr_debug.get("qr_url") or "").strip()
+    if _is_qr_placeholder(qr_url):
+        raise RuntimeError(f"dCarQR inválido tras regeneración: {qr_url!r}")
     
     # 10. Construir lote.xml con rDE directo (NO xDE)
     # IMPORTANTE: lote.xml debe contener <rDE> directamente, NO <xDE>
@@ -5204,6 +5373,7 @@ def send_sirecepde(xml_path: Path, env: str = "test", artifacts_dir: Optional[Pa
                 xml_bytes=xml_bytes,
                 cert_path=sign_cert_path,
                 cert_password=sign_cert_password,
+                env=env,
                 return_debug=True,
                 dump_http=dump_http,
                 artifacts_dir=artifacts_dir,
@@ -5217,6 +5387,19 @@ def send_sirecepde(xml_path: Path, env: str = "test", artifacts_dir: Optional[Pa
                 zip_base64 = result
                 zip_bytes = base64.b64decode(zip_base64)
                 lote_xml_bytes = None
+
+            # Guardrail QR: extraer y validar dCarQR final ANTES de enviar
+            if lote_xml_bytes is None:
+                with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zf:
+                    lote_xml_bytes = zf.read("lote.xml")
+            dcarqr_final = _extract_first_dcarqr_from_lote(lote_xml_bytes)
+            print(f"🔗 dCarQR generado: {dcarqr_final}")
+            if _is_qr_placeholder(dcarqr_final):
+                return {
+                    "success": False,
+                    "error": f"dCarQR inválido (placeholder detectado): {dcarqr_final!r}",
+                    "error_type": "QRValidationError",
+                }
             
             print("✓ Lote construido y rDE firmado exitosamente\n")
             
@@ -6400,5 +6583,3 @@ if __name__ == "__main__":
         print("❌ EXCEPCIÓN NO MOSTRADA:", repr(e), file=sys.stderr)
         traceback.print_exc()
         sys.exit(1)
-
-

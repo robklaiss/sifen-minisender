@@ -1662,7 +1662,7 @@ def _build_invoice_xml_from_template(
         numero_documento=dnumdoc,
         tipo_documento=tipo_doc,
         fecha=fecha,
-        monto=cdc_total_str,
+        monto=f"{int(cdc_total_str):010d}",
         codseg=codseg_digits,
     )
 

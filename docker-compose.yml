@@ -1,0 +1,11 @@
+services:
+  webui:
+    container_name: sifen-webui
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5055:5055"
+    volumes:
+      - ./:/opt/sifen-minisender

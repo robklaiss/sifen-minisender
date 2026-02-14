@@ -216,6 +216,31 @@ def _pick_first_existing(artifacts_dir: Path, names: Tuple[str, ...]) -> Optiona
     return None
 
 
+def _find_previous_accepted_run_for_lote(
+    *,
+    artifacts_root: Path,
+    env: str,
+    lote_sha256: str,
+) -> Tuple[Optional[Path], Optional[dict]]:
+    if not artifacts_root.exists() or not artifacts_root.is_dir():
+        return None, None
+
+    # Names are run_YYYYMMDD_HHMMSS, so reverse lexicographic order is newest first.
+    for meta_file in sorted(artifacts_root.glob("run_*/meta.json"), reverse=True):
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(meta.get("env") or "").strip().lower() != env:
+            continue
+        if str(meta.get("lote_sha256") or "").strip().lower() != lote_sha256.lower():
+            continue
+        if str(meta.get("dCodRes") or "").strip() != "0300":
+            continue
+        return meta_file.parent, meta
+    return None, None
+
+
 def _get_consulta_lote_wsdl_and_endpoint(env: str) -> Tuple[str, str]:
     env_norm = (env or "").strip().lower()
     if env_norm not in ("test", "prod"):
@@ -432,6 +457,26 @@ def send(
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     root = (artifacts_root or Path(os.getenv("SIFEN_ARTIFACTS_DIR") or os.getenv("SIFEN_ARTIFACTS_PATH") or "artifacts")).expanduser()
+    lote_sha256 = hashlib.sha256(lote_xml_bytes).hexdigest()
+
+    allow_duplicate_lote = (os.getenv("SIFEN_ALLOW_DUPLICATE_LOTE") or "").strip().lower() in ("1", "true", "yes")
+    if not allow_duplicate_lote:
+        prev_dir, prev_meta = _find_previous_accepted_run_for_lote(
+            artifacts_root=root,
+            env=env_norm,
+            lote_sha256=lote_sha256,
+        )
+        if prev_dir is not None and prev_meta is not None:
+            prev_prot = str(prev_meta.get("dProtConsLote") or "").strip() or "N/A"
+            raise SystemExit(
+                "ERROR: este lote ya fue aceptado previamente (dCodRes=0300); "
+                "no se reenvía para evitar rechazo 0301 por DE duplicado.\n"
+                f"lote_sha256={lote_sha256}\n"
+                f"run_aceptado={prev_dir}\n"
+                f"dProtConsLote={prev_prot}\n"
+                "Para forzar reenvío (no recomendado), setear SIFEN_ALLOW_DUPLICATE_LOTE=1."
+            )
+
     run_dir = root / f"run_{ts}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -448,7 +493,7 @@ def send(
         "input_signed_rde_xml": str(signed_rde_xml_path),
         "mtls_cert_path": cert_path,
         "mtls_key_path": key_path,
-        "lote_sha256": hashlib.sha256(lote_xml_bytes).hexdigest(),
+        "lote_sha256": lote_sha256,
         "zip_sha256": hashlib.sha256(zip_bytes).hexdigest(),
         "soap_request_sha256": hashlib.sha256(soap_bytes).hexdigest(),
     }

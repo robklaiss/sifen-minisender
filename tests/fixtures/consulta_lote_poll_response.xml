@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
+  <soap:Body>
+    <rResEnviConsLoteDe xmlns="http://ekuatia.set.gov.py/sifen/xsd">
+      <dCodResLot>0365</dCodResLot>
+      <dMsgResLot>Procesado con observaciones</dMsgResLot>
+      <gResProcLote>
+        <id>01800600505001001000000012026021219999999999</id>
+        <dEstRes>1</dEstRes>
+        <gResProc>
+          <dCodRes>0000</dCodRes>
+          <dMsgRes>Aprobado</dMsgRes>
+        </gResProc>
+      </gResProcLote>
+      <gResProcLote>
+        <id>01800600505001001000000013026021218888888888</id>
+        <dEstRes>2</dEstRes>
+        <gResProc>
+          <dCodRes>0200</dCodRes>
+          <dMsgRes>Error de validacion</dMsgRes>
+        </gResProc>
+      </gResProcLote>
+    </rResEnviConsLoteDe>
+  </soap:Body>
+</soap:Envelope>

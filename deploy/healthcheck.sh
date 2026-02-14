@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="/opt/sifen-minisender-2"
+APP_DIR="/opt/sifen-minisender"
 PORT="5055"
 
 while [[ $# -gt 0 ]]; do

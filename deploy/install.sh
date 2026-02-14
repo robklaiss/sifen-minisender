@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_USER="sifen"
-APP_DIR="/opt/sifen-minisender-2"
+APP_DIR="/opt/sifen-minisender"
 DOMAIN=""
 EMAIL=""
 REPO_URL=""
@@ -63,13 +63,9 @@ sudo -u "$APP_USER" bash -lc "
 "
 
 echo "==> Creating runtime dirs"
-mkdir -p "$APP_DIR/artifacts" "$APP_DIR/backups"
-chown -R "$APP_USER":"$APP_USER" "$APP_DIR/artifacts" "$APP_DIR/backups"
-
-echo "==> Creating certs dir /etc/sifen/certs"
-mkdir -p /etc/sifen/certs
-chown -R "$APP_USER":"$APP_USER" /etc/sifen
-chmod 700 /etc/sifen
+mkdir -p "$APP_DIR/artifacts" "$APP_DIR/backups" "$APP_DIR/assets" "$APP_DIR/secrets"
+chown -R "$APP_USER":"$APP_USER" "$APP_DIR/artifacts" "$APP_DIR/backups" "$APP_DIR/assets" "$APP_DIR/secrets"
+chmod 700 "$APP_DIR/secrets"
 
 if [[ ! -f "$APP_DIR/.env" ]]; then
   echo "==> Creating .env from template"

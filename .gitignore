@@ -25,3 +25,8 @@ webui/data.db-wal
 *.p12
 *.pem
 *.key
+secrets/*
+!secrets/README.md
+
+# PROD runtime (no commitear)
+prod/

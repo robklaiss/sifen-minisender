@@ -3424,6 +3424,41 @@ class SoapClient:
     def _parse_consulta_lote_response_from_xml(self, xml_root: Any) -> Dict[str, Any]:
         """Parsea la respuesta de consulta de lote desde XML."""
         import lxml.etree as etree  # noqa: F401
+
+        body_child = None
+        local_name = etree.QName(xml_root).localname
+        if local_name == "Envelope":
+            body_nodes = xml_root.xpath("//*[local-name()='Body']")
+            if not body_nodes:
+                raise SifenClientError("Respuesta SOAP inválida: Body no encontrado en consulta_lote")
+            for child in body_nodes[0]:
+                if isinstance(getattr(child, "tag", None), str):
+                    body_child = child
+                    break
+            if body_child is None:
+                raise SifenClientError("Respuesta SOAP inválida: Body sin payload en consulta_lote")
+            xml_root = body_child
+            local_name = etree.QName(xml_root).localname
+
+        if local_name == "Fault":
+            fault_code = xml_root.xpath('string(.//*[local-name()="Value"][1])') or None
+            fault_string = xml_root.xpath('string(.//*[local-name()="Text"][1])') or xml_root.xpath(
+                'string(.//*[local-name()="faultstring"][1])'
+            )
+            detail_text = xml_root.xpath('string(.//*[local-name()="detail"][1])') or None
+            raise SifenClientError(
+                "SOAP Fault en consulta_lote: "
+                f"fault_code={fault_code or 'N/A'} "
+                f"fault_string={fault_string or 'N/A'} "
+                f"detail={detail_text or 'N/A'}"
+            )
+
+        if local_name != "rResEnviConsLoteDe":
+            raise SifenClientError(
+                "Respuesta inesperada en consulta_lote: "
+                f"root={local_name!r}, esperado='rResEnviConsLoteDe'. "
+                "Revisar endpoint/operación SOAP."
+            )
         
         result: Dict[str, Any] = {
             "ok": False,
@@ -3496,11 +3531,10 @@ class SoapClient:
         session = self.transport.session
 
         wsdl_url = self.config.get_soap_service_url("consulta_lote")
-        endpoint_base = wsdl_url[:-5] if wsdl_url.endswith(".wsdl") else wsdl_url
+        endpoint = self._normalize_soap_endpoint(wsdl_url)
 
-        # IMPORTANTE: SIFEN resetea conexión si hacemos POST al .wsdl.
-        # El .wsdl se usa solo para GET (validación); el POST va al endpoint_base.
-        endpoint_candidates = [endpoint_base]
+        # Para consulta-lote, el POST debe mantener .wsdl para enrutamiento correcto.
+        endpoint_candidates = [endpoint]
 
         content_type_variants = ['application/soap+xml; charset=utf-8; action=""']
         attempts: List[Dict[str, Any]] = []

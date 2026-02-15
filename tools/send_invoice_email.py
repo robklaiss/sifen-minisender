@@ -30,7 +30,9 @@ def send_email(
 ) -> None:
     pdf_path = Path(pdf_path)
     if not pdf_path.exists():
-        raise SystemExit(f"PDF no encontrado: {pdf_path}")
+        raise SystemExit(f"PDF no encontrado para adjuntar: {pdf_path}")
+    if not pdf_path.is_file():
+        raise SystemExit(f"Ruta PDF inválida (no es archivo): {pdf_path}")
 
     msg = EmailMessage()
     msg["From"] = mail_from
@@ -47,15 +49,20 @@ def send_email(
     )
 
     context = ssl.create_default_context()
+    smtp_debug = os.getenv("SMTP_DEBUG") == "1"
 
     # 587 = STARTTLS (recomendado). 465 = SSL directo.
     if smtp_port == 465:
         with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=30) as s:
+            if smtp_debug:
+                s.set_debuglevel(1)
             if smtp_user:
                 s.login(smtp_user, smtp_pass or "")
             s.send_message(msg)
     else:
         with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as s:
+            if smtp_debug:
+                s.set_debuglevel(1)
             s.ehlo()
             s.starttls(context=context)
             s.ehlo()

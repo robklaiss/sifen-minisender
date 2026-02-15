@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import time
@@ -12,6 +13,8 @@ from typing import Any, Dict, List, Optional
 import requests
 from lxml import etree
 
+from tools.post_consulta_lote import handle_post_consulta_lote
+
 SIFEN_NS = "http://ekuatia.set.gov.py/sifen/xsd"
 SOAP12_NS = "http://www.w3.org/2003/05/soap-envelope"
 
@@ -19,6 +22,8 @@ ENDPOINTS = {
     "prod": "https://sifen.set.gov.py/de/ws/consultas/consulta-lote.wsdl",
     "test": "https://sifen-test.set.gov.py/de/ws/consultas/consulta-lote.wsdl",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def generate_did() -> str:
@@ -180,11 +185,13 @@ def _write_parsed_file(output_path: Path, parsed: Dict[str, Any]) -> None:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
     ap = argparse.ArgumentParser(description="Poll de consulta-lote SIFEN con artifacts por intento.")
     ap.add_argument("--env", required=True, choices=["prod", "test"])
     ap.add_argument("--prot", required=True, help="Valor dProtConsLote")
     ap.add_argument("--retries", type=int, default=6)
     ap.add_argument("--sleep", type=int, default=10, dest="sleep_seconds")
+    ap.add_argument("--email-to", default=os.getenv("SIFEN_EMAIL_TO", ""), help="Destinatario email para DE aprobado (0260).")
     args = ap.parse_args()
 
     if args.retries < 1:
@@ -242,6 +249,34 @@ def main() -> int:
 
         _write_headers_file(headers_path, endpoint, request_headers, response, error)
         _write_parsed_file(parsed_path, parsed)
+
+        for de_result in parsed.get("gResProcLote", []):
+            de_id = (de_result.get("id") or "").strip()
+            de_dcodres = (de_result.get("dCodRes") or "").strip()
+            if not de_id:
+                continue
+            try:
+                handle_post_consulta_lote(
+                    dCodRes=de_dcodres,
+                    de_id=de_id,
+                    otros_campos={
+                        "env": args.env,
+                        "artifacts_root": Path("artifacts"),
+                        "email_to": (args.email_to or "").strip(),
+                        "dMsgRes": de_result.get("dMsgRes"),
+                        "pdf_data": {
+                            "parsed_fields": {
+                                "dCodRes": de_dcodres,
+                                "dMsgRes": de_result.get("dMsgRes"),
+                                "dId": de_id,
+                                "dProtConsLote": args.prot,
+                            },
+                            "CDC": de_id,
+                        },
+                    },
+                )
+            except Exception as exc:
+                logger.exception("Error en post-consulta para CDC=%s: %s", de_id, exc)
 
         final_code = parsed.get("dCodResLot")
         print(

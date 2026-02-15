@@ -35,7 +35,7 @@ class QRGenerator:
     # URLs base según ambiente
     QR_URL_BASE = {
         'TEST': 'https://www.ekuatia.set.gov.py/consultas-test/qr?',
-        'PROD': 'https://www.ekuatia.set.gov.py/consultas/qr?'
+        'PROD': 'https://ekuatia.set.gov.py/consultas/qr?'
     }
     
     def __init__(

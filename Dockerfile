@@ -1,9 +1,10 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-WORKDIR /opt/sifen-minisender
+WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -12,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo-dev \
     libssl-dev \
     libxml2-dev \
+    libxmlsec1 \
     libxmlsec1-dev \
     libxmlsec1-openssl \
     pkg-config \
@@ -19,19 +21,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /opt/sifen-minisender/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r /opt/sifen-minisender/requirements.txt
+COPY . /app
 
-COPY . /opt/sifen-minisender
+RUN pip install --upgrade pip && \
+    if [ -f /app/requirements.txt ]; then \
+      pip install -r /app/requirements.txt; \
+    elif [ -f /app/pyproject.toml ]; then \
+      pip install /app; \
+    else \
+      echo "No dependency file found (requirements.txt or pyproject.toml)." && exit 1; \
+    fi
+
+RUN addgroup --system app && adduser --system --ingroup app app && \
+    mkdir -p /app/artifacts /app/backups /app/secrets /app/data /app/assets && \
+    chown -R app:app /app
+
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh && \
-    mkdir -p /opt/sifen-minisender/artifacts \
-             /opt/sifen-minisender/backups \
-             /opt/sifen-minisender/secrets \
-             /opt/sifen-minisender/assets
+USER app
 
 EXPOSE 5055
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["help"]

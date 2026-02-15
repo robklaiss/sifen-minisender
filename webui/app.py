@@ -1785,7 +1785,7 @@ def _update_qr_in_signed_xml(xml_text: str, csc: str, csc_id: str) -> tuple[str,
     if not base_url:
         env = (os.getenv("SIFEN_ENV") or "test").strip().lower()
         if env == "prod":
-            base_url = "https://www.ekuatia.set.gov.py/consultas/qr"
+            base_url = "https://ekuatia.set.gov.py/consultas/qr"
         else:
             base_url = "https://www.ekuatia.set.gov.py/consultas-test/qr"
     base_url = base_url.rstrip("?")

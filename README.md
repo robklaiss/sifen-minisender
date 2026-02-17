@@ -209,7 +209,7 @@ make sample-xml
 Helper directo:
 
 ```bash
-python -m tools.prepare_xml_latest --xml latest --artifacts-dir /data/artifacts
+python3 -m tools.prepare_xml_latest --xml latest --artifacts-dir /data/artifacts
 ```
 
 ## Artifacts, debug y dump HTTP

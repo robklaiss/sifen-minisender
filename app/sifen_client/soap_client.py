@@ -80,6 +80,13 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent.parent / "tools"))
     from cert_resolver import validate_no_self_signed, save_resolved_certs_artifact
 
+try:
+    from tools.artifacts import resolve_artifacts_dir
+except ImportError:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "tools"))
+    from artifacts import resolve_artifacts_dir
+
 logger = logging.getLogger(__name__)
 
 # Constantes de namespace SIFEN
@@ -129,6 +136,16 @@ def build_consulta_lote_raw_envelope(d_id: str, d_prot_cons_lote: str) -> bytes:
         encoding="UTF-8",
         pretty_print=False,
     )
+
+
+def validate_xml_bytes_or_raise(xml_bytes: bytes, context: str) -> None:
+    """Valida que XML bytes sean parseables por lxml."""
+    if etree is None:
+        raise SifenClientError(f"lxml no está disponible para validar XML ({context})")
+    try:
+        etree.fromstring(xml_bytes)
+    except Exception as exc:
+        raise SifenClientError(f"XML inválido en {context}: {exc}") from exc
 
 # Códigos de error SIFEN (parciales)
 ERROR_CODES = {
@@ -248,13 +265,12 @@ class SoapClient:
 
     def _get_artifacts_dir(self) -> Path:
         """Resolve artifacts directory (env override) and ensure it exists."""
-        raw_dir = os.getenv("SIFEN_ARTIFACTS_DIR") or os.getenv("SIFEN_ARTIFACTS_PATH")
-        try:
-            base_path = Path(raw_dir).expanduser() if raw_dir else Path("artifacts")
-        except Exception:
-            base_path = Path("artifacts")
-        base_path.mkdir(parents=True, exist_ok=True)
-        return base_path
+        raw_dir = (
+            os.getenv("SIFEN_ARTIFACTS_DIR")
+            or os.getenv("ARTIFACTS_DIR")
+            or os.getenv("SIFEN_ARTIFACTS_PATH")
+        )
+        return resolve_artifacts_dir(raw_dir)
 
     def _prepare_request_artifacts(
         self,
@@ -343,7 +359,10 @@ class SoapClient:
                 logger.warning(f"No se pudo guardar response SOAP ({label}): {exc}")
         elif not response_path.exists():
             try:
-                response_path.write_text("", encoding="utf-8")
+                if error_message:
+                    response_path.write_text(f"NO_RESPONSE\nERROR: {error_message}\n", encoding="utf-8")
+                else:
+                    response_path.write_text("", encoding="utf-8")
             except Exception:
                 pass
 
@@ -3524,14 +3543,32 @@ class SoapClient:
         if did is None or not str(did).strip():
             did = datetime.utcnow().strftime("%Y%m%d%H%M%S") + str(random.randint(0, 9))
 
-        soap_bytes = build_consulta_lote_raw_envelope(str(did), str(dprot_cons_lote).strip())
-        soap_xml_str = soap_bytes.decode("utf-8", errors="replace")
-
-        artifacts_dir_path = artifacts_dir if artifacts_dir else self._get_artifacts_dir()
+        artifacts_dir_path = resolve_artifacts_dir(artifacts_dir) if artifacts_dir else self._get_artifacts_dir()
         session = self.transport.session
 
         wsdl_url = self.config.get_soap_service_url("consulta_lote")
         endpoint = self._normalize_soap_endpoint(wsdl_url)
+
+        soap_bytes = build_consulta_lote_raw_envelope(str(did), str(dprot_cons_lote).strip())
+        soap_xml_str = soap_bytes.decode("utf-8", errors="replace")
+        soap_last_request_path = artifacts_dir_path / "soap_last_request.xml"
+        try:
+            soap_last_request_path.write_bytes(soap_bytes)
+        except Exception as exc:
+            logger.warning(f"No se pudo guardar soap_last_request.xml: {exc}")
+
+        try:
+            validate_xml_bytes_or_raise(soap_bytes, "consulta_lote_raw request")
+        except Exception as exc:
+            invalid_path = artifacts_dir_path / "soap_invalid_request.xml"
+            try:
+                invalid_path.write_bytes(soap_bytes)
+            except Exception:
+                pass
+            raise SifenClientError(
+                "SOAP inválido para consulta_lote_raw; "
+                f"request guardado en {invalid_path}"
+            ) from exc
 
         # Para consulta-lote, el POST debe mantener .wsdl para enrutamiento correcto.
         endpoint_candidates = [endpoint]
@@ -3539,43 +3576,6 @@ class SoapClient:
         content_type_variants = ['application/soap+xml; charset=utf-8; action=""']
         attempts: List[Dict[str, Any]] = []
         last_error: Optional[Exception] = None
-        
-        # Intentar descargar WSDL primero para verificar si viene vacío
-        wsdl_attempts = 0
-        max_wsdl_attempts = 3
-        wsdl_delay = 1.0
-        
-        while wsdl_attempts < max_wsdl_attempts:
-            wsdl_attempts += 1
-            try:
-                print(f"🔍 Intentando descargar WSDL (intento {wsdl_attempts}/{max_wsdl_attempts})...")
-                wsdl_response = session.get(
-                    wsdl_url,
-                    cert=(self.config.cert_pem_path, self.config.key_pem_path),
-                    verify=self.config.ca_bundle_path,
-                    timeout=10
-                )
-                
-                if wsdl_response.status_code == 200:
-                    if len(wsdl_response.content) == 0:
-                        print(f"⚠️ WSDL vino vacío (bytes=0), reintentando en {wsdl_delay}s...")
-                        time.sleep(wsdl_delay)
-                        wsdl_delay *= 2  # Backoff exponencial
-                        continue
-                    else:
-                        print(f"✅ WSDL descargado correctamente ({len(wsdl_response.content)} bytes)")
-                        break
-                else:
-                    print(f"❌ Error HTTP {wsdl_response.status_code} descargando WSDL")
-                    
-            except Exception as e:
-                print(f"❌ Error descargando WSDL: {e}")
-                if wsdl_attempts < max_wsdl_attempts:
-                    time.sleep(wsdl_delay)
-                    wsdl_delay *= 2
-        
-        if wsdl_attempts >= max_wsdl_attempts:
-            raise SifenClientError("No se pudo descargar WSDL después de varios intentos (viene vacío)")
 
         for endpoint in endpoint_candidates:
             for content_type in content_type_variants:
@@ -3612,6 +3612,11 @@ class SoapClient:
                     )
                     response_body = resp.content or b""
                     response_headers = dict(resp.headers)
+                    soap_last_response_path = artifacts_dir_path / "soap_last_response.xml"
+                    try:
+                        soap_last_response_path.write_bytes(response_body)
+                    except Exception as exc:
+                        logger.warning(f"No se pudo guardar soap_last_response.xml: {exc}")
                     attempt_ctx["http_status"] = resp.status_code
                     attempt_ctx["response_path"] = str(
                         (artifacts_dir_path / f"{label}_response.xml").resolve()
@@ -3635,14 +3640,22 @@ class SoapClient:
                         last_error = SifenClientError(
                             f"HTTP {resp.status_code} sin cuerpo al consultar lote"
                         )
-                        attempts.append(attempt_ctx)
+                        attempt_ctx["error"] = str(last_error)
                         continue
 
                     try:
                         xml_root = etree.fromstring(response_body)
                     except Exception as parse_exc:
-                        last_error = parse_exc
-                        attempts.append(attempt_ctx)
+                        parse_error_path = artifacts_dir_path / "soap_last_response_parse_error.txt"
+                        try:
+                            parse_error_path.write_text(f"{type(parse_exc).__name__}: {parse_exc}\n", encoding="utf-8")
+                        except Exception:
+                            pass
+                        last_error = SifenClientError(
+                            "No se pudo parsear response SOAP de consulta_lote_raw; "
+                            f"ver {parse_error_path}"
+                        )
+                        attempt_ctx["error"] = str(last_error)
                         continue
 
                     parsed = self._parse_consulta_lote_response_from_xml(xml_root)
@@ -3677,6 +3690,13 @@ class SoapClient:
                 except Exception as exc:
                     last_error = exc
                     attempt_ctx["error"] = str(exc)
+                    soap_last_response_error_path = artifacts_dir_path / "soap_last_response_error.txt"
+                    try:
+                        soap_last_response_error_path.write_text(
+                            f"{type(exc).__name__}: {exc}\n", encoding="utf-8"
+                        )
+                    except Exception:
+                        pass
                     self._persist_http_attempt(
                         artifacts_dir=artifacts_dir_path,
                         label=label,

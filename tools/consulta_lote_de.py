@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
 
 # Asegurar import "app.*" aunque ejecutes desde tools/
@@ -14,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.sifen_client.config import get_sifen_config
 from app.sifen_client.soap_client import SoapClient
+from tools.artifacts import make_run_dir, resolve_artifacts_dir
 
 
 def _set_if_attr(obj, name: str, value) -> bool:
@@ -35,12 +35,15 @@ def main() -> int:
     ap.add_argument("--artifacts-dir", default=None)
     args = ap.parse_args()
 
-    # Artifacts dir
-    if args.artifacts_dir:
-        artifacts_dir = Path(args.artifacts_dir)
-    else:
-        artifacts_dir = Path("artifacts") / f"consulta_lote_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    # Artifacts dir (crear run dir al inicio, siempre)
+    base_artifacts_dir = resolve_artifacts_dir(args.artifacts_dir)
+    run_dir = make_run_dir(
+        "consulta_lote_de",
+        args.env,
+        prot=str(args.prot).strip(),
+        did=str(args.did),
+        artifacts_dir=base_artifacts_dir,
+    )
 
     # Config + client
     config = get_sifen_config(env=args.env)
@@ -49,18 +52,27 @@ def main() -> int:
     # Intentar setear flags/paths según la versión de SoapClient
     _set_if_attr(client, "dump_http", bool(args.dump_http))
     _set_if_attr(client, "debug_soap", bool(args.dump_http))
-    _set_if_attr(client, "artifacts_dir", artifacts_dir)
-    _set_if_attr(client, "artifacts_base_dir", artifacts_dir)
+    _set_if_attr(client, "artifacts_dir", run_dir)
+    _set_if_attr(client, "artifacts_base_dir", run_dir)
 
     # Ejecutar consulta (la función ya existe en tu SoapClient)
-    out = client.consulta_lote_raw(
-        dprot_cons_lote=str(args.prot).strip(),
-        did=int(args.did),
-        dump_http=bool(args.dump_http),
-    )
+    try:
+        out = client.consulta_lote_raw(
+            dprot_cons_lote=str(args.prot).strip(),
+            did=int(args.did),
+            dump_http=bool(args.dump_http),
+            artifacts_dir=run_dir,
+        )
+    except Exception as exc:
+        err_path = run_dir / "consulta_lote_error.txt"
+        err_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+        print(f"ERROR consulta_lote_de: {exc}")
+        print("Artifacts dir:", str(run_dir))
+        print("Error file:", str(err_path))
+        raise
 
     # Guardar JSON parseado
-    jpath = artifacts_dir / f"consulta_lote_{args.prot}.json"
+    jpath = run_dir / f"consulta_lote_{args.prot}.json"
     jpath.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Imprimir resumen
@@ -79,7 +91,7 @@ def main() -> int:
     for k in ["dEstLote", "dMsgEst", "dCodResLot", "dMsgResLot", "dFecProc"]:
         if k in parsed and parsed.get(k) is not None:
             print(f"{k}: {parsed.get(k)}")
-    print("Artifacts dir:", str(artifacts_dir))
+    print("Artifacts dir:", str(run_dir))
     print("JSON:", str(jpath))
     print("============================================================")
 

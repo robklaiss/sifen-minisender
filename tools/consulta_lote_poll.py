@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from lxml import etree
 
+from tools.artifacts import make_run_dir, resolve_artifacts_dir
 from tools.post_consulta_lote import handle_post_consulta_lote
 
 SIFEN_NS = "http://ekuatia.set.gov.py/sifen/xsd"
@@ -139,10 +139,6 @@ def _resolve_cert_and_key() -> tuple[str, str]:
     return str(cert), str(key)
 
 
-def _safe_for_path(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()) or "prot"
-
-
 def _write_headers_file(
     output_path: Path,
     endpoint: str,
@@ -192,6 +188,7 @@ def main() -> int:
     ap.add_argument("--retries", type=int, default=6)
     ap.add_argument("--sleep", type=int, default=10, dest="sleep_seconds")
     ap.add_argument("--email-to", default=os.getenv("SIFEN_EMAIL_TO", ""), help="Destinatario email para DE aprobado (0260).")
+    ap.add_argument("--artifacts-dir", default=None, help="Base de artifacts (default: SIFEN_ARTIFACTS_DIR/ARTIFACTS_DIR o /data/artifacts)")
     args = ap.parse_args()
 
     if args.retries < 1:
@@ -201,16 +198,20 @@ def main() -> int:
 
     cert, key = _resolve_cert_and_key()
     endpoint = ENDPOINTS[args.env]
+    base_artifacts_dir = resolve_artifacts_dir(args.artifacts_dir)
     stop_codes = {"0362", "0365"}
-    prot_safe = _safe_for_path(args.prot)
     final_code: Optional[str] = None
 
     for attempt in range(1, args.retries + 1):
         did = generate_did()
         soap_bytes = build_consulta_lote_soap_12(did=did, prot=args.prot)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        run_dir = Path("artifacts") / f"run_{ts}_consult_{args.env}_{prot_safe}"
-        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = make_run_dir(
+            "consulta_lote_poll",
+            args.env,
+            prot=args.prot,
+            did=did,
+            artifacts_dir=base_artifacts_dir,
+        )
 
         req_path = run_dir / "req.xml"
         resp_path = run_dir / "resp.xml"
@@ -261,7 +262,7 @@ def main() -> int:
                     de_id=de_id,
                     otros_campos={
                         "env": args.env,
-                        "artifacts_root": Path("artifacts"),
+                        "artifacts_root": base_artifacts_dir,
                         "email_to": (args.email_to or "").strip(),
                         "dMsgRes": de_result.get("dMsgRes"),
                         "pdf_data": {

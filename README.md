@@ -172,12 +172,26 @@ Poll test con protocolo:
 make poll-test PROTO=47353168697912368
 ```
 
+Los resultados del poll se guardan en directorios de corrida bajo `/data/artifacts` (contenedor), que en host corresponden a `./data/artifacts/run_*`.
+
 Producción:
 
 ```bash
 make send-prod XML=/data/artifacts/mi_rde.xml
 make poll-prod PROTO=47353168697912368
 ```
+
+### Flujo recomendado (send lote + poll)
+
+Mac/local (host):
+
+```bash
+make send-test XML=data/artifacts/mi_rde.xml
+make poll-test PROTO=<DPROTCONSLOTE> RETRIES=6 SLEEP=10
+ls -lah data/artifacts/run_*
+```
+
+En Docker, `tools/consulta_lote_poll.py` y `tools/consulta_lote_de.py` usan por defecto `SIFEN_ARTIFACTS_DIR`, luego `ARTIFACTS_DIR`, y luego `/data/artifacts`.
 
 ## UX de `latest`
 

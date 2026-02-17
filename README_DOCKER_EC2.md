@@ -47,10 +47,9 @@ chmod 600 /opt/sifen-minisender/secrets/cert.pem /opt/sifen-minisender/secrets/k
 
 Notas:
 - El `docker-compose.yml` fija en runtime:
-  - `SIFEN_CERT_PATH=/app/secrets/cert.pem`
-  - `SIFEN_KEY_PATH=/app/secrets/key.pem`
-- Artifacts persisten en `./artifacts` montado como `/app/artifacts`.
-- `./secrets` se monta read-only en `/app/secrets`.
+  - `SIFEN_CERT_PATH` y `SIFEN_KEY_PATH` desde `.env` apuntando al volumen `/secrets`
+- Artifacts persisten en `./data/artifacts` (host) montado como `/data/artifacts` (contenedor).
+- `./secrets` se monta read-only como `/secrets`.
 
 ## 4) Build + run del servicio
 
@@ -59,7 +58,7 @@ cd /opt/sifen-minisender
 docker compose build
 docker compose up -d
 docker compose ps
-docker compose logs -f --tail=200 sifen-minisender
+docker compose logs -f --tail=200 web
 ```
 
 Para override rápido de destinatario:
@@ -72,11 +71,11 @@ SIFEN_EMAIL_TO=destino@empresa.com docker compose up -d
 
 ```bash
 cd /opt/sifen-minisender
-docker compose run --rm sifen-minisender python -m tools.test_smtp_pdf_flow --dry-run
+docker compose run --rm cli "python3 -m tools.test_smtp_pdf_flow --dry-run"
 ```
 
-Esperado: generación de PDF en `/app/artifacts/test_smtp/post_consulta_lote/<CDC>/invoice_<CDC>.pdf`
-(host: `/opt/sifen-minisender/artifacts/test_smtp/...`).
+Esperado: generación de PDF en `/data/artifacts/test_smtp/post_consulta_lote/<CDC>/invoice_<CDC>.pdf`
+(host: `/opt/sifen-minisender/data/artifacts/test_smtp/...`).
 
 ## 6) Envío real + poll dentro del contenedor
 
@@ -84,17 +83,31 @@ Enviar `siRecepLoteDE`:
 
 ```bash
 cd /opt/sifen-minisender
-docker compose run --rm sifen-minisender python -m tools.send_sirecepde --env test --xml artifacts/archivo_firmado.xml
+make send-test XML=/data/artifacts/archivo_firmado.xml
 ```
 
 Consultar lote y disparar `post_consulta_lote`:
 
 ```bash
 cd /opt/sifen-minisender
-docker compose run --rm sifen-minisender python -m tools.consulta_lote_poll --env test --prot <DPROTCONSLOTE> --retries 6 --sleep 10 --email-to "${SIFEN_EMAIL_TO}"
+make poll-test PROTO=<DPROTCONSLOTE> RETRIES=6 SLEEP=10
 ```
 
 En PROD reemplazar `--env test` por `--env prod`.
+
+Comandos equivalentes en PROD:
+
+```bash
+cd /opt/sifen-minisender
+make send-prod XML=/data/artifacts/archivo_firmado.xml
+make poll-prod PROTO=<DPROTCONSLOTE> RETRIES=6 SLEEP=10
+```
+
+Artifacts de cada corrida se guardan en host en:
+
+```bash
+ls -lah /opt/sifen-minisender/data/artifacts/run_*
+```
 
 ## 7) Deploy simple en EC2 (script)
 

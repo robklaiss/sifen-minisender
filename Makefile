@@ -5,6 +5,7 @@ XML ?= latest
 PROTO ?=
 RETRIES ?= 6
 SLEEP ?= 10
+ARTIFACTS_DIR ?= /data/artifacts
 
 .PHONY: up down logs shell test check-env sample-xml send-test poll-test send-prod poll-prod
 
@@ -37,15 +38,15 @@ sample-xml:
 	fi
 
 send-test: check-env
-	$(CLI) "xml_path=$$(python -m tools.prepare_xml_latest --xml '$(XML)' --artifacts-dir '$${SIFEN_ARTIFACTS_DIR:-$${ARTIFACTS_DIR:-/data/artifacts}}') && python -m tools.send_sirecepde --env test --xml \"$$xml_path\""
+	$(CLI) "xml_path=$$(python3 -m tools.prepare_xml_latest --xml '$(XML)' --artifacts-dir '$${SIFEN_ARTIFACTS_DIR:-$${ARTIFACTS_DIR:-/data/artifacts}}') && python3 -m tools.send_sirecepde --env test --xml \"$$xml_path\""
 
 poll-test:
 	@if [ -z "$(PROTO)" ]; then echo "Uso: make poll-test PROTO=<dProtConsLote> [RETRIES=6] [SLEEP=10]"; exit 1; fi
-	$(CLI) "python -m tools.consulta_lote_poll --env test --prot '$(PROTO)' --retries $(RETRIES) --sleep $(SLEEP)"
+	$(CLI) "python3 -m tools.consulta_lote_poll --env test --prot '$(PROTO)' --retries $(RETRIES) --sleep $(SLEEP) --artifacts-dir '$${SIFEN_ARTIFACTS_DIR:-$${ARTIFACTS_DIR:-$(ARTIFACTS_DIR)}}'"
 
 send-prod: check-env
-	$(CLI) "xml_path=$$(python -m tools.prepare_xml_latest --xml '$(XML)' --artifacts-dir '$${SIFEN_ARTIFACTS_DIR:-$${ARTIFACTS_DIR:-/data/artifacts}}') && python -m tools.send_sirecepde --env prod --xml \"$$xml_path\""
+	$(CLI) "xml_path=$$(python3 -m tools.prepare_xml_latest --xml '$(XML)' --artifacts-dir '$${SIFEN_ARTIFACTS_DIR:-$${ARTIFACTS_DIR:-/data/artifacts}}') && python3 -m tools.send_sirecepde --env prod --xml \"$$xml_path\""
 
 poll-prod:
 	@if [ -z "$(PROTO)" ]; then echo "Uso: make poll-prod PROTO=<dProtConsLote> [RETRIES=6] [SLEEP=10]"; exit 1; fi
-	$(CLI) "python -m tools.consulta_lote_poll --env prod --prot '$(PROTO)' --retries $(RETRIES) --sleep $(SLEEP)"
+	$(CLI) "python3 -m tools.consulta_lote_poll --env prod --prot '$(PROTO)' --retries $(RETRIES) --sleep $(SLEEP) --artifacts-dir '$${SIFEN_ARTIFACTS_DIR:-$${ARTIFACTS_DIR:-$(ARTIFACTS_DIR)}}'"

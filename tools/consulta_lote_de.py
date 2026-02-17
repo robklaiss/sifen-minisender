@@ -35,15 +35,19 @@ def main() -> int:
     ap.add_argument("--artifacts-dir", default=None)
     args = ap.parse_args()
 
-    # Artifacts dir (crear run dir al inicio, siempre)
-    base_artifacts_dir = resolve_artifacts_dir(args.artifacts_dir)
-    run_dir = make_run_dir(
-        "consulta_lote_de",
-        args.env,
-        prot=str(args.prot).strip(),
-        did=str(args.did),
-        artifacts_dir=base_artifacts_dir,
-    )
+    # Artifacts dir
+    if args.artifacts_dir:
+        run_dir = Path(args.artifacts_dir).resolve()
+        run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        base_artifacts_dir = resolve_artifacts_dir(None)
+        run_dir = make_run_dir(
+            "consulta_lote_de",
+            args.env,
+            prot=str(args.prot).strip(),
+            did=str(args.did),
+            artifacts_dir=base_artifacts_dir,
+        )
 
     # Config + client
     config = get_sifen_config(env=args.env)

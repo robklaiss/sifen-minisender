@@ -8,3 +8,6 @@ cryptography>=42.0.0
 signxml>=3.2.0
 gunicorn>=21.2.0
 python-dotenv>=1.0.1
+zeep>=4.2.1
+
+xmlsec

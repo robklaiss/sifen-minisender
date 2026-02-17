@@ -7,7 +7,7 @@ RETRIES ?= 6
 SLEEP ?= 10
 ARTIFACTS_DIR ?= /data/artifacts
 
-.PHONY: up down logs shell test check-env sample-xml send-test poll-test send-prod poll-prod
+.PHONY: up down logs shell test check-env sample-xml send-test poll-test send-prod poll-prod smoke-local
 
 up:
 	$(COMPOSE) up -d --build
@@ -50,3 +50,6 @@ send-prod: check-env
 poll-prod:
 	@if [ -z "$(PROTO)" ]; then echo "Uso: make poll-prod PROTO=<dProtConsLote> [RETRIES=6] [SLEEP=10]"; exit 1; fi
 	$(CLI) "python3 -m tools.consulta_lote_poll --env prod --prot '$(PROTO)' --retries $(RETRIES) --sleep $(SLEEP) --artifacts-dir '$${SIFEN_ARTIFACTS_DIR:-$${ARTIFACTS_DIR:-$(ARTIFACTS_DIR)}}'"
+
+smoke-local:
+	./.venv/bin/python tools/smoke.py --env test

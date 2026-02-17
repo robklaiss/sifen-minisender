@@ -1,0 +1,43 @@
+{
+  "codseg": "123456789",
+  "establishment": "001",
+  "point_exp": "001",
+  "customer": {
+    "name": "Cliente Smoke",
+    "ruc": "80012345-0"
+  },
+  "lines": [
+    {
+      "description": "Producto demo",
+      "qty": "1",
+      "price_unit": "100",
+      "line_total": "100",
+      "iva_rate": 10
+    }
+  ],
+  "docs": {
+    "factura": {
+      "doc_number": "0000001"
+    },
+    "remision": {
+      "doc_number": "0000002",
+      "extra_json": {
+        "remision": {
+          "iMotEmiNR": "1",
+          "iRespEmiNR": "1",
+          "kmEstimado": 5
+        }
+      }
+    },
+    "credito": {
+      "doc_number": "0000003",
+      "extra_json": {
+        "iMotEmi": "1",
+        "documentoAsociado": {
+          "tipoDocumentoAsoc": "1",
+          "cdcAsociado": "REEMPLAZAR_CDC_FACTURA_ORIGINAL_44_DIGITOS"
+        }
+      }
+    }
+  }
+}

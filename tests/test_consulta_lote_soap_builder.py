@@ -23,3 +23,9 @@ def test_consulta_lote_raw_builder_produces_parseable_xml():
 
     assert d_id == "202602170000001"
     assert d_prot == prot
+
+
+def test_consulta_lote_raw_builder_is_lxml_parseable():
+    soap_bytes = build_consulta_lote_raw_envelope("202602170000009", "47353168698201554")
+    root = etree.fromstring(soap_bytes)
+    assert root.tag.endswith("Envelope")

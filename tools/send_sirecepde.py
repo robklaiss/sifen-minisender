@@ -24,6 +24,7 @@ import argparse
 import os
 import re
 import copy
+import html
 from lxml import etree
 import time
 from pathlib import Path
@@ -78,6 +79,182 @@ def _resolve_run_artifacts_dir(*, run_id: Optional[str], artifacts_dir_override:
         return _resolve_artifacts_dir(artifacts_dir_override)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return _resolve_artifacts_dir(_resolve_artifacts_base_dir() / f"run_{ts}")
+
+
+def _latest_match(base_dir: Path, pattern: str) -> Optional[Path]:
+    matches = sorted(base_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    return matches[0] if matches else None
+
+
+def _copy_if_missing(dst: Path, candidates: list[Path]) -> bool:
+    if dst.exists():
+        return True
+    for src in candidates:
+        try:
+            if src.exists() and src.is_file():
+                dst.write_bytes(src.read_bytes())
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _extract_signed_de_from_lote_xml(lote_xml_bytes: bytes) -> Optional[bytes]:
+    try:
+        root = etree.fromstring(lote_xml_bytes)
+    except Exception:
+        return None
+
+    def _lname(tag: str) -> str:
+        return tag.split("}", 1)[1] if "}" in tag else tag
+
+    rde_elem = None
+    if _lname(root.tag) == "rDE":
+        rde_elem = root
+    elif _lname(root.tag) == "rLoteDE":
+        for child in list(root):
+            if _lname(child.tag) == "rDE":
+                rde_elem = child
+                break
+    if rde_elem is None:
+        found = root.xpath(".//*[local-name()='rDE']")
+        if found:
+            rde_elem = found[0]
+    if rde_elem is None:
+        return None
+    try:
+        return etree.tostring(rde_elem, xml_declaration=True, encoding="utf-8", pretty_print=False)
+    except Exception:
+        return None
+
+
+def ensure_core_artifacts(
+    *,
+    artifacts_dir: Path,
+    result: Optional[dict] = None,
+) -> None:
+    run_dir = _resolve_artifacts_dir(artifacts_dir)
+    root_dir = run_dir.parent if run_dir.name.startswith("run_") else run_dir
+
+    req_dst = run_dir / "soap_last_request.xml"
+    req_candidates = [
+        run_dir / "soap_last_request_SENT.xml",
+        run_dir / "soap_last_request_REAL.xml",
+        run_dir / "soap_last_request_BYTES.bin",
+        root_dir / "soap_last_request.xml",
+        root_dir / "soap_last_request_SENT.xml",
+        root_dir / "soap_last_request_REAL.xml",
+    ]
+    latest_sent = _latest_match(run_dir, "soap_raw_sent_lote_*.xml")
+    if latest_sent:
+        req_candidates.insert(0, latest_sent)
+    _copy_if_missing(req_dst, req_candidates)
+    if not req_dst.exists():
+        err_msg = ""
+        if isinstance(result, dict):
+            err_msg = str(result.get("error") or "")
+        req_placeholder = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<error><type>NO_REQUEST_CAPTURED</type>"
+            f"<message>{html.escape(err_msg[:500])}</message></error>\n"
+        )
+        req_dst.write_text(req_placeholder, encoding="utf-8")
+
+    resp_dst = run_dir / "soap_last_response.xml"
+    resp_candidates = [
+        run_dir / "soap_last_received_lote.xml",
+        root_dir / "soap_last_response.xml",
+    ]
+    latest_resp = _latest_match(run_dir, "soap_raw_response_lote_*.xml")
+    if latest_resp:
+        resp_candidates.insert(0, latest_resp)
+    _copy_if_missing(resp_dst, resp_candidates)
+    if not resp_dst.exists():
+        err_msg = ""
+        if isinstance(result, dict):
+            err_msg = str(result.get("error") or "")
+        placeholder = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<error><type>NO_RESPONSE</type>"
+            f"<message>{err_msg[:500]}</message></error>\n"
+        )
+        resp_dst.write_text(placeholder, encoding="utf-8")
+
+    de_dst = run_dir / "de.xml"
+    if not de_dst.exists():
+        lote_candidates = [
+            run_dir / "_final_verified_lote.xml",
+            run_dir / "last_lote.xml",
+            run_dir / "_last_sent_lote.xml",
+            root_dir / "diag_lote_from_request.xml",
+        ]
+        for lote_path in lote_candidates:
+            try:
+                if not lote_path.exists() or not lote_path.is_file():
+                    continue
+                signed_de = _extract_signed_de_from_lote_xml(lote_path.read_bytes())
+                if signed_de:
+                    de_dst.write_bytes(signed_de)
+                    break
+            except Exception:
+                continue
+    if not de_dst.exists():
+        de_candidates = []
+        latest_input = _latest_match(run_dir, "*_input.xml")
+        if latest_input is not None:
+            de_candidates.append(latest_input)
+        latest_bumped = _latest_match(run_dir, "xml_bumped_*.xml")
+        if latest_bumped is not None:
+            de_candidates.append(latest_bumped)
+        _copy_if_missing(de_dst, de_candidates)
+    if not de_dst.exists():
+        err_msg = ""
+        if isinstance(result, dict):
+            err_msg = str(result.get("error") or "")
+        de_placeholder = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<de_placeholder><signed>false</signed>"
+            f"<message>{html.escape(err_msg[:500])}</message></de_placeholder>\n"
+        )
+        de_dst.write_text(de_placeholder, encoding="utf-8")
+
+    # Resumen mínimo de respuesta para soporte.
+    summary_data: dict[str, Any] = {
+        "timestamp": datetime.now().isoformat(),
+        "success": bool((result or {}).get("success")) if isinstance(result, dict) else False,
+        "dCodRes": None,
+        "dMsgRes": None,
+        "CDC": None,
+        "dId": None,
+        "dProtConsLote": None,
+        "error": (result or {}).get("error") if isinstance(result, dict) else None,
+        "error_type": (result or {}).get("error_type") if isinstance(result, dict) else None,
+    }
+
+    if isinstance(result, dict):
+        summary_data["dId"] = result.get("dId")
+        response = result.get("response") if isinstance(result.get("response"), dict) else {}
+        summary_data["dCodRes"] = response.get("codigo_respuesta") or response.get("dCodRes")
+        summary_data["dMsgRes"] = response.get("mensaje") or response.get("dMsgRes")
+        summary_data["CDC"] = response.get("cdc") or response.get("Id")
+        summary_data["dProtConsLote"] = response.get("d_prot_cons_lote") or response.get("dProtConsLote")
+
+    if not summary_data.get("dId"):
+        summary_file = run_dir / "summary.txt"
+        if summary_file.exists():
+            try:
+                for line in summary_file.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("dId="):
+                        summary_data["dId"] = line.split("=", 1)[1].strip() or None
+                        break
+            except Exception:
+                pass
+
+    response_json = run_dir / "sifen_response.json"
+    response_json.write_text(
+        json.dumps(summary_data, ensure_ascii=False, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _consulta_ruc_gate_with_retry(client, ruc_emisor, dump_http, artifacts_dir, max_tries=8):
@@ -6119,7 +6296,11 @@ def send_sirecepde(xml_path: Path, env: str = "test", artifacts_dir: Optional[Pa
         return {
             "success": response.get('ok', False),
             "response": response,
-            "response_file": str(response_file) if artifacts_dir else None
+            "response_file": str(response_file) if artifacts_dir else None,
+            "dId": did_para_log,
+            "dCodRes": response.get("codigo_respuesta"),
+            "dMsgRes": response.get("mensaje"),
+            "dProtConsLote": response.get("d_prot_cons_lote"),
         }
         
     except SifenSizeLimitError as e:
@@ -6559,6 +6740,10 @@ Configuración requerida (variables de entorno):
         artifacts_dir=artifacts_dir,
         dump_http=dump_http
     )
+    try:
+        ensure_core_artifacts(artifacts_dir=artifacts_dir, result=result)
+    except Exception as artifact_exc:
+        print(f"⚠️  No se pudieron completar artifacts core: {artifact_exc}")
     
     # Retornar código de salida (0 solo si success es True explícitamente)
     success = result.get("success") is True

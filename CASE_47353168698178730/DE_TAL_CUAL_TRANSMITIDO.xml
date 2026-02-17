@@ -1,0 +1,103 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rLoteDE xmlns="http://ekuatia.set.gov.py/sifen/xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://ekuatia.set.gov.py/sifen/xsd siRecepDE_v150.xsd"><rDE xmlns="http://ekuatia.set.gov.py/sifen/xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://ekuatia.set.gov.py/sifen/xsd siRecepDE_v150.xsd"><dVerFor>150</dVerFor>
+    <DE Id="01045547378001001102593012026012911234567892">
+        <dDVId>2</dDVId>
+        <dFecFirma>2026-01-29T03:08:47</dFecFirma>
+        <dSisFact>1</dSisFact>
+        <gOpeDE>
+            <iTipEmi>1</iTipEmi>
+            <dDesTipEmi>Normal</dDesTipEmi>
+            <dCodSeg>123456789</dCodSeg>
+        </gOpeDE>
+        <gTimb>
+            <iTiDE>1</iTiDE>
+            <dDesTiDE>Factura electrónica</dDesTiDE>
+            <dNumTim>12560693</dNumTim>
+            <dEst>001</dEst>
+            <dPunExp>001</dPunExp>
+            <dNumDoc>1025930</dNumDoc>
+            <dFeIniT>2026-01-29</dFeIniT>
+        </gTimb>
+        <gDatGralOpe>
+            <dFeEmiDE>2026-01-29T03:08:47</dFeEmiDE>
+            <gEmis>
+                <dRucEm>4554737</dRucEm>
+                <dDVEmi>8</dDVEmi>
+                <iTipCont>1</iTipCont>
+                <dNomEmi>Contribuyente de Prueba S.A.</dNomEmi>
+                <dDirEmi>Asunción</dDirEmi>
+                <dNumCas>1234</dNumCas>
+                <cDepEmi>1</cDepEmi>
+                <dDesDepEmi>CAPITAL</dDesDepEmi>
+                <cCiuEmi>1</cCiuEmi>
+                <dDesCiuEmi>Asunción</dDesCiuEmi>
+                <dTelEmi>021123456</dTelEmi>
+                <dEmailE>test@example.com</dEmailE>
+                <gActEco>
+                    <cActEco>471100</cActEco>
+                    <dDesActEco>Venta al por menor en comercios no especializados</dDesActEco>
+                </gActEco>
+            </gEmis>
+            <gDatRec>
+                <iNatRec>1</iNatRec>
+                <iTiOpe>1</iTiOpe>
+                <cPaisRec>PRY</cPaisRec>
+                <dDesPaisRe>Paraguay</dDesPaisRe>
+                <dRucRec>80012345</dRucRec>
+                <dDVRec>7</dDVRec>
+                <dNomRec>Cliente de Prueba</dNomRec>
+                <dDirRec>Asunción</dDirRec>
+                <dNumCasRec>5678</dNumCasRec>
+                <cDepRec>1</cDepRec>
+                <dDesDepRec>CAPITAL</dDesDepRec>
+                <cCiuRec>1</cCiuRec>
+                <dDesCiuRec>Asunción</dDesCiuRec>
+            </gDatRec>
+        </gDatGralOpe>
+        <gDtipDE>
+            <gCamItem>
+                <dCodInt>001</dCodInt>
+                <dDesProSer>Producto de Prueba</dDesProSer>
+                <cUniMed>77</cUniMed>
+                <dDesUniMed>UNI</dDesUniMed>
+                <dCantProSer>1.00</dCantProSer>
+                <gValorItem>
+                    <dPUniProSer>100000</dPUniProSer>
+                    <dTotBruOpeItem>100000</dTotBruOpeItem>
+                    <gValorRestaItem>
+                        <dTotOpeItem>100000</dTotOpeItem>
+                    </gValorRestaItem>
+                </gValorItem>
+            </gCamItem>
+        </gDtipDE>
+        <gTotSub>
+            <dSubExe>0</dSubExe>
+            <dSubExo>0</dSubExo>
+            <dSub5>0</dSub5>
+            <dSub10>0</dSub10>
+            <dTotOpe>100000</dTotOpe>
+            <dTotDesc>0</dTotDesc>
+            <dTotDescGlotem>0</dTotDescGlotem>
+            <dTotAntItem>0</dTotAntItem>
+            <dTotAnt>0</dTotAnt>
+            <dPorcDescTotal>0</dPorcDescTotal>
+            <dDescTotal>0</dDescTotal>
+            <dAnticipo>0</dAnticipo>
+            <dRedon>0</dRedon>
+            <dTotGralOpe>100000</dTotGralOpe>
+            <dIVA5>0</dIVA5>
+            <dIVA10>0</dIVA10>
+            <dLiqTotIVA5>0</dLiqTotIVA5>
+            <dLiqTotIVA10>0</dLiqTotIVA10>
+            <dTotalGs>100000</dTotalGs>
+        </gTotSub>
+    </DE>
+    <Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><Reference URI="#01045547378001001102593012026012911234567892"><Transforms><Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>4/6YK2oxIXbfSx7cZlyFj23uOmTQOuu9WSBNSbz26CM=</DigestValue></Reference></SignedInfo><SignatureValue>Zlgfk01qMvL9fN8uGYInDIHEIZ2IEHaqPBpVu+3+K+4OvGlpSFPGPuwHzEVuPGQR
+DJN+GcT5XVaoUWQTlb4X3kOLLqMIynWCRj1tHGG2h/SqTf2l/91KmF5is0rs0HsK
+q1b3l+EF9wOCQ9e9BlArms9H7b6fpEyPouOFEITJ7JK2MUttA7r2UzpP1PJq/0ce
+vPWiZe5iqKgziEVuNWcEEm1jQ09SFfPD5gN/loCbl6GCv4GHi/Ob5PPgnHFGLZG+
+imSvv353qNGnayuzsIca3hTvAkBEIfLgXC2hvGAlYncImpXcpprKJthJ1tn+Hl5J
+58t9X9WemINKLSVos/FEmg==</SignatureValue><KeyInfo><X509Data><X509Certificate>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</X509Certificate></X509Data></KeyInfo></Signature><gCamFuFD>
+        <dCarQR>https://ekuatia.set.gov.py/consultas/qr?nVersion=150&amp;Id=01045547378001001102593012026012911234567892&amp;dFeEmiDE=323032362d30312d32395430333a30383a3437&amp;dRucRec=80012345&amp;dTotGralOpe=100000&amp;dTotIVA=0&amp;cItems=1&amp;DigestValue=342f36594b326f7849586266537837635a6c79466a3233754f6d54514f7575395753424e53627a3236434d3d&amp;IdCSC=1&amp;cHashQR=98eec7cf9a3a6efd2563258bcc40939f91674001db43c0e031f29e65bddd5164</dCarQR>
+    </gCamFuFD>
+</rDE></rLoteDE>

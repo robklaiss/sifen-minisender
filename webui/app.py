@@ -40,7 +40,24 @@ from app.sifen_client.cdc_utils import calc_dv_mod11
 from sifen_minisender.core_send import send_lote_from_xml
 
 APP_TITLE = "SIFEN WebUI (SQLite)"
-DB_PATH = os.environ.get("SIFEN_WEBUI_DB", os.path.join(os.path.dirname(__file__), "data.db"))
+
+
+def _resolve_db_path() -> str:
+    raw = (
+        (os.getenv("WEBUI_DB_PATH") or "").strip()
+        or (os.getenv("SIFEN_WEBUI_DB") or "").strip()
+    )
+    if raw:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = (REPO_ROOT / p).resolve()
+        else:
+            p = p.resolve()
+        return str(p)
+    return str((REPO_ROOT / "data" / "webui.db").resolve())
+
+
+DB_PATH = _resolve_db_path()
 
 app = Flask(__name__)
 
@@ -176,6 +193,7 @@ _BOOTSTRAPPED = False
 # -------------------------
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
+        Path(DB_PATH).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(DB_PATH)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON;")
@@ -2300,6 +2318,7 @@ def _consult_lote_and_update(
     venv_py = str(repo_root_path / ".venv" / "bin" / "python")
     env_used = os.environ.copy()
     last_art_dir = normalize_artifacts_dir(prefer_art_dir or "") or ""
+    artifacts_root = _artifacts_root()
     final_status = "CONFIRMING"
 
     for idx in range(max(1, attempts)):
@@ -2307,6 +2326,7 @@ def _consult_lote_and_update(
             venv_py, "-m", "sifen_minisender", "consult",
             "--env", env,
             "--prot", prot,
+            "--artifacts-dir", str(artifacts_root),
         ]
         code, out, err = run_minisender(args, cwd=str(repo_root_path), env=env_used)
         parsed = parse_minisender_response(out)
@@ -2487,7 +2507,23 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 def _artifacts_root() -> Path:
-    root = (_repo_root() / "artifacts").resolve()
+    raw = (
+        (os.getenv("SIFEN_ARTIFACTS_DIR") or "").strip()
+        or (os.getenv("ARTIFACTS_DIR") or "").strip()
+    )
+    if raw:
+        root = Path(raw).expanduser()
+        if not root.is_absolute():
+            root = (_repo_root() / root).resolve()
+        else:
+            root = root.resolve()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            return root
+        except Exception:
+            pass
+
+    root = (_repo_root() / "data" / "artifacts").resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -2522,26 +2558,109 @@ def _artifact_url(path_value: Optional[str]) -> Optional[str]:
         return None
     return url_for("artifact_file", artifact_relpath=rel)
 
-def _latest_send_lote_run() -> Optional[dict]:
-    root = _artifacts_root()
-    for cand in list_recent_artifacts_dirs(root):
-        last_lote = cand / "last_lote.xml"
-        if not last_lote.exists():
-            continue
-        response_json = None
-        response_cands = sorted(
-            cand.glob("response_recepcion_*.json"),
+
+def _parse_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    txt = str(value).strip().lower()
+    if txt in ("1", "true", "yes", "on", "si", "sí"):
+        return True
+    if txt in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def _artifact_links_for_dir(run_dir: Optional[str]) -> dict:
+    links = {
+        "run_dir": run_dir or None,
+        "last_lote_xml": None,
+        "last_xde_zip": None,
+        "soap_last_request_xml": None,
+        "soap_last_response_xml": None,
+        "response_json": None,
+    }
+    art_dir = normalize_artifacts_dir(run_dir or "")
+    if not art_dir:
+        return links
+
+    p = Path(art_dir)
+    if not p.exists() or not p.is_dir():
+        return links
+
+    links["last_lote_xml"] = _artifact_url(str(p / "last_lote.xml"))
+    links["last_xde_zip"] = _artifact_url(str(p / "last_xde.zip"))
+    links["soap_last_request_xml"] = _artifact_url(str(p / "soap_last_request.xml"))
+    links["soap_last_response_xml"] = _artifact_url(str(p / "soap_last_response.xml"))
+
+    response_json = None
+    for pattern in ("response_recepcion_*.json", "sifen_response.json"):
+        cands = sorted(
+            p.glob(pattern),
             key=lambda x: x.stat().st_mtime,
             reverse=True,
         )
-        if response_cands:
-            response_json = response_cands[0]
+        if cands:
+            response_json = cands[0]
+            break
+    if response_json is not None:
+        links["response_json"] = _artifact_url(str(response_json))
+    return links
+
+
+def _invoice_api_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "issued_at": row["issued_at"],
+        "queued_at": row["queued_at"],
+        "sent_at": row["sent_at"],
+        "confirmed_at": row["confirmed_at"],
+        "sifen_env": row["sifen_env"],
+        "sifen_prot_cons_lote": row["sifen_prot_cons_lote"],
+        "last_lote_code": row["last_lote_code"],
+        "last_lote_msg": row["last_lote_msg"],
+        "last_sifen_code": row["last_sifen_code"],
+        "last_sifen_msg": row["last_sifen_msg"],
+        "last_sifen_est": row["last_sifen_est"],
+        "last_sifen_prot_aut": row["last_sifen_prot_aut"],
+        "source_xml_path": row["source_xml_path"],
+        "last_artifacts_dir": row["last_artifacts_dir"],
+    }
+
+def _latest_send_lote_run() -> Optional[dict]:
+    root = _artifacts_root()
+    for cand in list_recent_artifacts_dirs(root):
+        run_dir = cand
+        last_lote = cand / "last_lote.xml"
+        if not last_lote.exists():
+            nested = sorted(
+                cand.glob("*/last_lote.xml"),
+                key=lambda x: x.stat().st_mtime,
+                reverse=True,
+            )
+            if not nested:
+                continue
+            last_lote = nested[0]
+            run_dir = last_lote.parent
+        response_json = None
+        for pattern in ("response_recepcion_*.json", "sifen_response.json"):
+            response_cands = sorted(
+                run_dir.glob(pattern),
+                key=lambda x: x.stat().st_mtime,
+                reverse=True,
+            )
+            if response_cands:
+                response_json = response_cands[0]
+                break
         return {
-            "run_dir": str(cand),
+            "run_dir": str(run_dir),
             "artifacts": {
                 "last_lote_xml": str(last_lote),
-                "last_xde_zip": str(cand / "last_xde.zip") if (cand / "last_xde.zip").exists() else None,
-                "soap_request": str(cand / "soap_last_request.xml") if (cand / "soap_last_request.xml").exists() else None,
+                "last_xde_zip": str(run_dir / "last_xde.zip") if (run_dir / "last_xde.zip").exists() else None,
+                "soap_request": str(run_dir / "soap_last_request.xml") if (run_dir / "soap_last_request.xml").exists() else None,
                 "response_json": str(response_json) if response_json else None,
             },
         }
@@ -2822,7 +2941,7 @@ def set_setting(key: str, value: str) -> None:
     con.commit()
 
 def _diagnostics_artifacts_dir() -> Path:
-    root = _repo_root() / "artifacts" / "diagnostics"
+    root = _artifacts_root() / "diagnostics"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -2966,7 +3085,12 @@ def _diagnostics_dry_run() -> dict:
 def _diagnostics_consult_lote(env: str, prot: str) -> dict:
     repo_root = _repo_root()
     venv_py = str(repo_root / ".venv" / "bin" / "python")
-    args = [venv_py, "-m", "sifen_minisender", "consult", "--env", env, "--prot", prot]
+    args = [
+        venv_py, "-m", "sifen_minisender", "consult",
+        "--env", env,
+        "--prot", prot,
+        "--artifacts-dir", str(_artifacts_root()),
+    ]
     env_used = os.environ.copy()
     if env == "prod":
         env_used["SIFEN_CONFIRM_PROD"] = "YES"
@@ -3510,6 +3634,206 @@ def artifact_file(artifact_relpath: str):
     if not safe_path.exists() or not safe_path.is_file():
         abort(404)
     return send_file(safe_path, as_attachment=False)
+
+
+@app.route("/api/artifacts/<path:artifact_relpath>")
+def api_artifact_file(artifact_relpath: str):
+    return artifact_file(artifact_relpath)
+
+
+@app.route("/api/runs", methods=["GET"])
+def api_runs():
+    init_db()
+    con = get_db()
+    try:
+        limit = int((request.args.get("limit") or "20").strip())
+    except Exception:
+        limit = 20
+    limit = max(1, min(limit, 200))
+    rows = con.execute(
+        """
+        SELECT id, created_at, issued_at, queued_at, sent_at, confirmed_at, status,
+               sifen_env, sifen_prot_cons_lote, last_lote_code, last_lote_msg,
+               last_sifen_code, last_sifen_msg, last_sifen_est, last_sifen_prot_aut,
+               source_xml_path, last_artifacts_dir
+        FROM invoices
+        ORDER BY COALESCE(sent_at, queued_at, created_at) DESC, id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    items = []
+    for row in rows:
+        item = _invoice_api_dict(row)
+        item["detail_url"] = url_for("invoice_detail", invoice_id=row["id"])
+        item["artifact_links"] = _artifact_links_for_dir(row["last_artifacts_dir"])
+        items.append(item)
+    return jsonify({"items": items, "count": len(items), "limit": limit})
+
+
+@app.route("/api/runs/latest-lote", methods=["GET"])
+def api_runs_latest_lote():
+    latest_run = _latest_send_lote_run()
+    if not latest_run:
+        return jsonify({"run": None})
+    artifacts = latest_run.get("artifacts") or {}
+    return jsonify(
+        {
+            "run": {
+                "run_dir": latest_run.get("run_dir"),
+                "artifacts": artifacts,
+                "artifact_links": {
+                    key: _artifact_url(path_value)
+                    for key, path_value in artifacts.items()
+                },
+            }
+        }
+    )
+
+
+@app.route("/api/invoices/<int:invoice_id>/artifacts", methods=["GET"])
+def api_invoice_artifacts(invoice_id: int):
+    init_db()
+    con = get_db()
+    inv = con.execute(
+        "SELECT id, last_artifacts_dir, last_event_artifacts_dir, source_xml_path FROM invoices WHERE id=?",
+        (invoice_id,),
+    ).fetchone()
+    if not inv:
+        return jsonify({"error": "invoice not found"}), 404
+
+    return jsonify(
+        {
+            "invoice_id": invoice_id,
+            "source_xml_path": inv["source_xml_path"],
+            "last_artifacts": _artifact_links_for_dir(inv["last_artifacts_dir"]),
+            "last_event_artifacts": _artifact_links_for_dir(inv["last_event_artifacts_dir"]),
+        }
+    )
+
+
+@app.route("/api/smoke", methods=["POST"])
+def api_smoke():
+    init_db()
+    payload = request.get_json(silent=True) or request.form or {}
+    env_choice = (payload.get("env") or "prod").strip().lower()
+    if env_choice == "both":
+        envs = ["test", "prod"]
+    elif env_choice in ("test", "prod"):
+        envs = [env_choice]
+    else:
+        return jsonify({"error": "env debe ser test, prod o both"}), 400
+
+    ruc = re.sub(r"\D", "", (payload.get("ruc") or ""))
+    cdc = re.sub(r"\D", "", (payload.get("cdc") or ""))
+    prot = re.sub(r"\D", "", (payload.get("prot") or ""))
+
+    result = {
+        "started_at": now_iso(),
+        "envs": envs,
+        "inputs": {"ruc": ruc, "cdc": cdc, "prot": prot},
+        "dry_run": None,
+        "consult_ruc": {},
+        "consult_cdc": {},
+        "consult_lote": {},
+    }
+
+    do_dry_run = _parse_bool(payload.get("do_dry_run"), default=True)
+    do_consult_ruc = _parse_bool(payload.get("do_consult_ruc"), default=True)
+    do_consult_cdc = _parse_bool(payload.get("do_consult_cdc"), default=True)
+    do_consult_lote = _parse_bool(payload.get("do_consult_lote"), default=True)
+
+    if do_dry_run:
+        result["dry_run"] = _diagnostics_dry_run()
+
+    for env in envs:
+        if do_consult_ruc and ruc:
+            try:
+                result["consult_ruc"][env] = _diagnostics_consult_ruc(env, ruc)
+            except Exception as exc:
+                result["consult_ruc"][env] = {"error": str(exc)}
+        if do_consult_cdc and cdc and len(cdc) == 44:
+            try:
+                result["consult_cdc"][env] = _diagnostics_consult_cdc(env, cdc)
+            except Exception as exc:
+                result["consult_cdc"][env] = {"error": str(exc)}
+        if do_consult_lote and prot:
+            try:
+                result["consult_lote"][env] = _diagnostics_consult_lote(env, prot)
+            except Exception as exc:
+                result["consult_lote"][env] = {"error": str(exc)}
+
+    persist = _parse_bool(payload.get("persist"), default=True)
+    if persist:
+        out_dir = _diagnostics_artifacts_dir()
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / f"diagnostics_{ts}.json"
+        out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        set_setting("diagnostics_last_path", str(out_path))
+        result["saved_to"] = str(out_path)
+
+    return jsonify(result)
+
+
+@app.route("/api/invoices/<int:invoice_id>/consult-lote", methods=["POST"])
+def api_invoice_consult_lote(invoice_id: int):
+    init_db()
+    con = get_db()
+    inv = con.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+    if not inv:
+        return jsonify({"error": "invoice not found"}), 404
+
+    payload = request.get_json(silent=True) or request.form or {}
+    env = (
+        (payload.get("env") or inv["sifen_env"] or get_setting("default_env", "prod") or "prod")
+        .strip()
+        .lower()
+    )
+    if env not in ("test", "prod"):
+        return jsonify({"error": "env debe ser test o prod"}), 400
+
+    prot = re.sub(r"\D", "", (payload.get("prot") or inv["sifen_prot_cons_lote"] or ""))
+    if not prot:
+        return jsonify({"error": "No hay dProtConsLote para consultar."}), 400
+
+    try:
+        attempts = int(payload.get("attempts") or "1")
+    except Exception:
+        attempts = 1
+    attempts = max(1, min(attempts, 5))
+
+    con.execute("UPDATE invoices SET sifen_env=? WHERE id=?", (env, invoice_id))
+    con.commit()
+
+    new_status = _consult_lote_and_update(
+        invoice_id=invoice_id,
+        env=env,
+        prot=prot,
+        rel_signed=inv["source_xml_path"] or None,
+        prefer_art_dir=inv["last_artifacts_dir"] or None,
+        attempts=attempts,
+        sleep_between=0,
+    )
+    if new_status == "CONFIRMING":
+        _schedule_lote_poll(invoice_id, env, prot, rel_signed=inv["source_xml_path"] or None)
+
+    updated = con.execute(
+        """
+        SELECT id, created_at, issued_at, queued_at, sent_at, confirmed_at, status,
+               sifen_env, sifen_prot_cons_lote, last_lote_code, last_lote_msg,
+               last_sifen_code, last_sifen_msg, last_sifen_est, last_sifen_prot_aut,
+               source_xml_path, last_artifacts_dir
+        FROM invoices
+        WHERE id=?
+        """,
+        (invoice_id,),
+    ).fetchone()
+    item = _invoice_api_dict(updated)
+    item["detail_url"] = url_for("invoice_detail", invoice_id=invoice_id)
+    item["artifact_links"] = _artifact_links_for_dir(updated["last_artifacts_dir"])
+    return jsonify({"invoice": item})
+
 
 @app.route("/send-lote", methods=["GET", "POST"])
 def send_lote_page():
@@ -4880,7 +5204,7 @@ def invoice_cancel(invoice_id: int):
             cdc=cdc,
             motivo=motivo,
             event_id=event_id,
-            artifacts_root=_repo_root() / "artifacts",
+            artifacts_root=_artifacts_root(),
         )
     except Exception as e:
         con.execute(
@@ -4985,7 +5309,7 @@ def invoice_inutil(invoice_id: int):
             tipo_doc=tipo_doc,
             motivo=motivo,
             event_id=event_id,
-            artifacts_root=_repo_root() / "artifacts",
+            artifacts_root=_artifacts_root(),
         )
     except Exception as e:
         con.execute(
@@ -5145,7 +5469,7 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
     if not rel_signed:
         repo_root = _repo_root()
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_dir = repo_root / "artifacts" / f"webui_emit_{invoice_id}_{ts}"
+        base_dir = _artifacts_root() / f"webui_emit_{invoice_id}_{ts}"
         base_dir.mkdir(parents=True, exist_ok=True)
 
         in_path = base_dir / f"rde_input_{build['dnumdoc']}.xml"
@@ -5185,10 +5509,11 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
     # enviar a SIFEN
     repo_root_path = _repo_root()
     venv_py = str(repo_root_path / ".venv" / "bin" / "python")
+    artifacts_root = _artifacts_root()
     args = [
         venv_py, "-m", "sifen_minisender", "send",
         "--env", env,
-        "--artifacts-root", str(repo_root_path / "artifacts"),
+        "--artifacts-root", str(artifacts_root),
         rel_signed,
     ]
 
@@ -5336,7 +5661,7 @@ def _generate_signed_xml_for_invoice(
 
     repo_root = _repo_root()
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_dir = repo_root / "artifacts" / f"webui_sign_{invoice_id}_{ts}"
+    base_dir = _artifacts_root() / f"webui_sign_{invoice_id}_{ts}"
     base_dir.mkdir(parents=True, exist_ok=True)
 
     in_path = base_dir / f"rde_input_{dnumdoc}.xml"
@@ -5384,7 +5709,7 @@ def invoice_send_test(invoice_id: int):
                 con.execute("UPDATE invoices SET source_xml_path=? WHERE id=?", (xml_path, invoice_id))
                 con.commit()
     if not xml_path:
-        artifacts_root = repo_root_path / "artifacts"
+        artifacts_root = _artifacts_root()
         for cand in list_recent_artifacts_dirs(artifacts_root):
             xml_path = resolve_source_xml_path(str(cand))
             if xml_path:
@@ -5401,9 +5726,12 @@ def invoice_send_test(invoice_id: int):
     # Ejecutar minisender desde repo raíz (un nivel arriba de webui)
     repo_root = str(repo_root_path)
     venv_py = str(repo_root_path / ".venv" / "bin" / "python")
-    args = [venv_py, "-m", "sifen_minisender", "send",
+    args = [
+        venv_py, "-m", "sifen_minisender", "send",
         "--env", "test",
-        xml_path]
+        "--artifacts-root", str(_artifacts_root()),
+        xml_path,
+    ]
 
     env_used = os.environ.copy()
     code, out, err = run_minisender(args, cwd=repo_root, env=env_used)
@@ -5574,7 +5902,7 @@ def invoice_refresh_soap(invoice_id: int):
             resp_path = cand
 
     if not resp_path:
-        artifacts_root = _repo_root() / "artifacts"
+        artifacts_root = _artifacts_root()
         for cand_dir in list_recent_artifacts_dirs(artifacts_root):
             cand = cand_dir / "soap_last_response.xml"
             if cand.exists():
@@ -5660,7 +5988,7 @@ def invoice_send_email(invoice_id: int):
         if not issuer:
             issuer = _build_issuer_from_template(template_path)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_dir = _repo_root() / "artifacts" / f"webui_email_{invoice_id}_{ts}"
+        base_dir = _artifacts_root() / f"webui_email_{invoice_id}_{ts}"
         base_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = str(base_dir / f"invoice_{invoice_id}.pdf")
         payload = _build_pdf_payload(
@@ -5788,7 +6116,7 @@ def invoice_preview_pdf(invoice_id: int):
         issuer = _build_issuer_from_template(template_path)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_dir = _repo_root() / "artifacts" / f"webui_preview_{invoice_id}_{ts}"
+    base_dir = _artifacts_root() / f"webui_preview_{invoice_id}_{ts}"
     base_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = base_dir / f"invoice_{invoice_id}.pdf"
     payload = _build_pdf_payload(

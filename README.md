@@ -193,6 +193,16 @@ ls -lah data/artifacts/run_*
 
 En Docker, `tools/consulta_lote_poll.py` y `tools/consulta_lote_de.py` usan por defecto `SIFEN_ARTIFACTS_DIR`, luego `ARTIFACTS_DIR`, y luego `/data/artifacts`.
 
+### WebUI + artifacts compartidos
+
+La WebUI usa la misma raíz de artifacts que CLI/minisender:
+
+- `SIFEN_ARTIFACTS_DIR` (prioridad 1)
+- `ARTIFACTS_DIR` (prioridad 2)
+- fallback local: `./data/artifacts`
+
+Esto permite que la WebUI pueda leer resultados del `tools/smoke.py` y de consultas/poll sin hacks de rutas.
+
 ## UX de `latest`
 
 `tools/send_sirecepde.py --xml latest` busca `sirecepde_*.xml` en el directorio de artifacts.

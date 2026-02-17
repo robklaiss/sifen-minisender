@@ -44,7 +44,11 @@ def _resolve_artifacts_dir(artifacts_dir: Optional[Path] = None) -> Path:
     if artifacts_dir is not None:
         p = Path(artifacts_dir)
     else:
-        raw_dir = os.getenv("SIFEN_ARTIFACTS_DIR") or os.getenv("SIFEN_ARTIFACTS_PATH")
+        raw_dir = (
+            os.getenv("SIFEN_ARTIFACTS_DIR")
+            or os.getenv("ARTIFACTS_DIR")
+            or os.getenv("SIFEN_ARTIFACTS_PATH")
+        )
         try:
             p = Path(raw_dir).expanduser() if raw_dir else Path("artifacts")
         except Exception:
@@ -53,14 +57,27 @@ def _resolve_artifacts_dir(artifacts_dir: Optional[Path] = None) -> Path:
     return p
 
 
+def _resolve_artifacts_base_dir() -> Path:
+    """Resolve base artifacts directory from env, with artifacts/ as fallback."""
+    raw_dir = (
+        os.getenv("SIFEN_ARTIFACTS_DIR")
+        or os.getenv("ARTIFACTS_DIR")
+        or os.getenv("SIFEN_ARTIFACTS_PATH")
+    )
+    try:
+        return Path(raw_dir).expanduser() if raw_dir else Path("artifacts")
+    except Exception:
+        return Path("artifacts")
+
+
 def _resolve_run_artifacts_dir(*, run_id: Optional[str], artifacts_dir_override: Optional[Path]) -> Path:
     """Resolve deterministic per-run artifacts dir."""
     if run_id:
-        return _resolve_artifacts_dir(Path("artifacts") / str(run_id))
+        return _resolve_artifacts_dir(_resolve_artifacts_base_dir() / str(run_id))
     if artifacts_dir_override is not None:
         return _resolve_artifacts_dir(artifacts_dir_override)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return _resolve_artifacts_dir(Path("artifacts") / f"run_{ts}")
+    return _resolve_artifacts_dir(_resolve_artifacts_base_dir() / f"run_{ts}")
 
 
 def _consulta_ruc_gate_with_retry(client, ruc_emisor, dump_http, artifacts_dir, max_tries=8):
@@ -5087,7 +5104,12 @@ def resolve_xml_path(xml_arg: str, artifacts_dir: Path) -> Path:
         xml_path = find_latest_sirecepde(artifacts_dir)
         if not xml_path:
             raise FileNotFoundError(
-                f"No se encontró ningún archivo sirecepde_*.xml en {artifacts_dir}"
+                "No se encontró ningún archivo sirecepde_*.xml para '--xml latest'.\n"
+                f"Busqué en: {artifacts_dir}\n"
+                "Soluciones:\n"
+                "  1) Pasar --xml /ruta/al/rde.xml\n"
+                "  2) Generar un ejemplo base con: make sample-xml\n"
+                "  3) Reintentar con: make send-test XML=/ruta/al/rde.xml"
             )
         return xml_path
     
@@ -6050,8 +6072,10 @@ def send_sirecepde(xml_path: Path, env: str = "test", artifacts_dir: Optional[Pa
                 artifacts_dir.mkdir(exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 # Add iteration number to timestamp if provided
-                if args.iteration is not None:
-                    timestamp = f"{timestamp}_iter{args.iteration}"
+                _args_obj = globals().get("args")
+                _iter = getattr(_args_obj, "iteration", None) if _args_obj is not None else None
+                if _iter is not None:
+                    timestamp = f"{timestamp}_iter{_iter}"
                 response_file = artifacts_dir / f"response_recepcion_{timestamp}.json"
                 
                 import json

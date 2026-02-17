@@ -25,20 +25,19 @@ def resolve_artifacts_dir(artifacts_dir: ArtifactsPathLike = None) -> Path:
     4) /data/artifacts
     """
     raw: Optional[str]
+    used_default_fallback = False
     if artifacts_dir is None:
-        raw = (
-            (os.getenv("SIFEN_ARTIFACTS_DIR") or "").strip()
-            or (os.getenv("ARTIFACTS_DIR") or "").strip()
-            or "/data/artifacts"
-        )
+        env_sifen_artifacts_dir = (os.getenv("SIFEN_ARTIFACTS_DIR") or "").strip()
+        env_artifacts_dir = (os.getenv("ARTIFACTS_DIR") or "").strip()
+        raw = env_sifen_artifacts_dir or env_artifacts_dir or "/data/artifacts"
+        used_default_fallback = not env_sifen_artifacts_dir and not env_artifacts_dir
     else:
         raw = str(artifacts_dir).strip()
         if not raw:
-            raw = (
-                (os.getenv("SIFEN_ARTIFACTS_DIR") or "").strip()
-                or (os.getenv("ARTIFACTS_DIR") or "").strip()
-                or "/data/artifacts"
-            )
+            env_sifen_artifacts_dir = (os.getenv("SIFEN_ARTIFACTS_DIR") or "").strip()
+            env_artifacts_dir = (os.getenv("ARTIFACTS_DIR") or "").strip()
+            raw = env_sifen_artifacts_dir or env_artifacts_dir or "/data/artifacts"
+            used_default_fallback = not env_sifen_artifacts_dir and not env_artifacts_dir
 
     path = Path(raw).expanduser()
     if not path.is_absolute():
@@ -46,8 +45,15 @@ def resolve_artifacts_dir(artifacts_dir: ArtifactsPathLike = None) -> Path:
     else:
         path = path.resolve()
 
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except Exception:
+        if not used_default_fallback:
+            raise
+        fallback = (Path.cwd() / "data" / "artifacts").resolve()
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 def make_run_dir(

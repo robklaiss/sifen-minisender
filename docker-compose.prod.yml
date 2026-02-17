@@ -1,20 +1,8 @@
 services:
-  webui:
-    container_name: sifen-webui
-    image: sifen-minise:prod
-    restart: unless-stopped
-    ports:
-      - "5055:5055"
-    volumes:
-      - ./prod/.env:/opt/sifen-minisender/.env:ro
-      - ./prod/secrets:/opt/sifen-minisender/secrets:ro
-      - ./prod/assets:/opt/sifen-minisender/assets:ro
-      - ./prod/webui/data.db:/opt/sifen-minisender/webui/data.db
-      - ./prod/artifacts:/opt/sifen-minisender/artifacts
-      - ./prod/backups:/opt/sifen-minisender/backups
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5055/invoices', timeout=3)\" >/dev/null 2>&1 || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
+  web:
+    environment:
+      SIFEN_ENV: prod
+
+  cli:
+    environment:
+      SIFEN_ENV: prod

@@ -4,24 +4,20 @@ set -euo pipefail
 APP_DIR="/app"
 cd "$APP_DIR"
 
-if [[ -f "$APP_DIR/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$APP_DIR/.env"
-  set +a
-fi
-
-mkdir -p "$APP_DIR/artifacts" "$APP_DIR/backups" "$APP_DIR/secrets" "$APP_DIR/assets"
-
-if [[ -n "${SIFEN_WEBUI_DB:-}" ]]; then
-  mkdir -p "$(dirname "$SIFEN_WEBUI_DB")"
-fi
-
 : "${WEBUI_HOST:=0.0.0.0}"
-: "${WEBUI_PORT:=5055}"
+: "${WEBUI_PORT:=8000}"
 : "${WEBUI_WORKERS:=1}"
 : "${WEBUI_THREADS:=2}"
 : "${WEBUI_TIMEOUT:=120}"
+: "${SIFEN_WEBUI_DB:=/data/webui.db}"
+: "${ARTIFACTS_DIR:=/data/artifacts}"
+: "${SIFEN_ARTIFACTS_DIR:=${ARTIFACTS_DIR}}"
+
+export WEBUI_HOST WEBUI_PORT WEBUI_WORKERS WEBUI_THREADS WEBUI_TIMEOUT
+export SIFEN_WEBUI_DB ARTIFACTS_DIR SIFEN_ARTIFACTS_DIR
+
+mkdir -p "/data" "$SIFEN_ARTIFACTS_DIR" "/data/logs" "$APP_DIR/backups" "$APP_DIR/assets"
+mkdir -p "$(dirname "$SIFEN_WEBUI_DB")"
 
 if [[ "$#" -gt 0 ]]; then
   case "$1" in

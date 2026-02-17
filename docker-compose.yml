@@ -1,33 +1,31 @@
 services:
-  sifen-minisender:
-    container_name: sifen-minisender
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
+  web:
+    build: .
     env_file:
       - .env
     environment:
-      SIFEN_CERT_PATH: /app/secrets/cert.pem
-      SIFEN_KEY_PATH: /app/secrets/key.pem
-      SIFEN_WEBUI_DB: /app/data/webui.db
-      SIFEN_EMAIL_TO: ${SIFEN_EMAIL_TO:-}
       WEBUI_HOST: 0.0.0.0
-      WEBUI_PORT: 5055
+      WEBUI_PORT: 8000
+      SIFEN_WEBUI_DB: ${SIFEN_WEBUI_DB:-/data/webui.db}
+      ARTIFACTS_DIR: ${ARTIFACTS_DIR:-/data/artifacts}
     ports:
-      - "5055:5055"
-    command: ["webui"]
+      - "8000:8000"
     volumes:
-      - ./.env:/app/.env:ro
-      - ./artifacts:/app/artifacts
-      - ./secrets:/app/secrets:ro
-      - ./data:/app/data
-      - ./backups:/app/backups
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - 'python -c "import os,urllib.request;urllib.request.urlopen(\"http://127.0.0.1:%s/invoices\" % os.getenv(\"WEBUI_PORT\", \"5055\"), timeout=3)" >/dev/null 2>&1 || exit 1'
-      interval: 20s
-      timeout: 5s
-      retries: 6
-      start_period: 25s
+      - ./secrets:/secrets:ro
+      - ./data:/data
+    command: ["webui"]
+    restart: unless-stopped
+
+  cli:
+    build: .
+    env_file:
+      - .env
+    environment:
+      SIFEN_WEBUI_DB: ${SIFEN_WEBUI_DB:-/data/webui.db}
+      ARTIFACTS_DIR: ${ARTIFACTS_DIR:-/data/artifacts}
+    volumes:
+      - ./secrets:/secrets:ro
+      - ./data:/data
+    entrypoint: ["bash", "-lc"]
+    stdin_open: true
+    tty: true

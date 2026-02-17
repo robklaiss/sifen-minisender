@@ -21,27 +21,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . /app
+COPY requirements.txt /app/requirements.txt
 
 RUN pip install --upgrade pip && \
-    if [ -f /app/requirements.txt ]; then \
-      pip install -r /app/requirements.txt; \
-    elif [ -f /app/pyproject.toml ]; then \
-      pip install /app; \
-    else \
-      echo "No dependency file found (requirements.txt or pyproject.toml)." && exit 1; \
-    fi
+    pip install -r /app/requirements.txt
 
-RUN addgroup --system app && adduser --system --ingroup app app && \
-    mkdir -p /app/artifacts /app/backups /app/secrets /app/data /app/assets && \
-    chown -R app:app /app
+COPY . /app
+
+ARG UID=1000
+ARG GID=1000
+RUN groupadd --gid "${GID}" app && \
+    useradd --uid "${UID}" --gid app --create-home --shell /bin/bash app && \
+    mkdir -p /data /secrets /app/backups /app/assets && \
+    chown -R app:app /app /data /secrets
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER app
 
-EXPOSE 5055
+EXPOSE 8000
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["help"]
+CMD ["webui"]

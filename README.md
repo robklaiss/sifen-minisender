@@ -1,102 +1,220 @@
 # sifen-minisender
 
-Repo Python minimal para enviar un lote async a SIFEN (rEnvioLote) y dejar artifacts reproducibles.
+Proyecto Python para envío de DE/lotes a SIFEN con WebUI y herramientas CLI.
 
-## Requisitos
+## Stack operativo (out-of-the-box)
 
-- Python 3.9
-- Dependencias: `requests`, `lxml`
-- mTLS (PEM):
-  - `SIFEN_CERT_PATH` (cert.pem)
-  - `SIFEN_KEY_PATH` (key.pem)
+- Docker + Docker Compose
+- Makefile con comandos copy/paste
+- `.env.example` sin secretos
+- Volúmenes estándar:
+  - `/secrets` (solo lectura): certs, keys, p12, CA bundle
+  - `/data` (persistente): SQLite, artifacts, logs
 
-## Instalación
+## Estructura esperada
 
-```bash
-python3.9 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
+```text
+.
+├── .env
+├── .env.example
+├── secrets/
+│   ├── cert.p12
+│   └── ca-bundle.pem
+└── data/
+    ├── webui.db
+    ├── artifacts/
+    └── logs/
 ```
 
-## Variables de entorno
+## Formato `.env` (importante)
 
-- `SIFEN_CERT_PATH` y `SIFEN_KEY_PATH`: requeridos para mTLS.
-- Endpoint envío de lote (`recibe-lote`) (prioridad):
-  - `SIFEN_RECIBE_LOTE_ENDPOINT`
-  - `SIFEN_WSDL_RECIBE_LOTE` (se usa el mismo URL pero sin query string `?wsdl`)
-  - defaults:
-    - TEST: `https://sifen-test.set.gov.py/de/ws/async/recibe-lote.wsdl`
-    - PROD: `https://sifen.set.gov.py/de/ws/async/recibe-lote.wsdl`
-- Endpoint consulta de resultado de lote (`consulta-lote`) (prioridad):
-  - `SIFEN_CONSULTA_LOTE_ENDPOINT` (URL real del endpoint, sin `?wsdl`)
-  - `SIFEN_WSDL_CONSULTA_LOTE` (WSDL; se deriva endpoint quitando `?wsdl` si existe)
-  - defaults:
-    - TEST: `https://sifen-test.set.gov.py/de/ws/consultas/consulta-lote.wsdl`
-    - PROD: `https://sifen.set.gov.py/de/ws/consultas/consulta-lote.wsdl`
-- Control de endpoint para consulta-lote:
-  - `SIFEN_STRIP_WSDL_ENDPOINTS=1` para forzar quitar el sufijo `.wsdl` antes de POST (por defecto se respeta el `soap:address` del WSDL).
-- Fallback WSDL local (si el GET remoto devuelve vacío o falla):
-  - `SIFEN_WSDL_CONSULTA_LOTE_LOCAL=/ruta/al/wsdl.xml`
-  - Si no se setea, se intenta con `artifacts/_wsdl_consulta_lote_curl.wsdl.xml` y `artifacts/_wsdl_probe_requests_ua.wsdl.xml` si existen.
-  - Para `--env prod`, por defecto NO se usa el `soap:address` del WSDL local (usar `SIFEN_USE_WSDL_ADDRESS=1` si querés forzarlo).
-- TLS:
-  - `SIFEN_FORCE_TLS12=1` (default) para forzar TLS 1.2 en consulta-lote.
-- Lote/rDE:
-  - `SIFEN_STRIP_XSI=1` para remover `xmlns:xsi` y `xsi:schemaLocation` del `rDE` dentro del lote (por defecto se conservan, recomendado).
+Si un valor tiene espacios, debe ir entre comillas dobles.
 
-**Guardrail PROD**: para `--env prod` se requiere `SIFEN_CONFIRM_PROD=YES`.
+Correcto:
 
-## Uso
-
-### 1) Enviar lote (`send`)
-
-Ejemplo usando el `signed_rde.xml` ya existente en `tesaka-if`:
-
-```bash
-python -m sifen_minisender send \
-  --env test \
-  artifacts/fix_20260206/signed_rde_valid_cdc.xml
+```env
+SMTP_PASS="rpfg shib ytjp lkka"
 ```
 
-Por defecto usa ZIP `deflated` (recomendado; con `stored` vimos rechazos `XML Mal Formado` en test). Para forzar `stored`:
+También correcto (sin espacios):
 
-```bash
-python -m sifen_minisender send --env test --zip stored \
-  artifacts/fix_20260206/signed_rde_valid_cdc.xml
+```env
+SMTP_PASS=abc123
 ```
 
-Cada corrida crea un directorio `artifacts/run_YYYYmmdd_HHMMSS/` con:
+Incorrecto (rompe `source .env`, típico error `command not found`):
 
-- `soap_last_request.xml`
-- `soap_last_response.xml`
-- `lote.xml`
-- `zip_sent.bin`
-- `meta.json`
-
-Nota: si en `consult` aparece `1101 TEST - Número de timbrado inválido`, el XML firmado tiene un timbrado no vigente para el emisor. Hay que **re-generar y re-firmar** el `signed_rde.xml` con un `dNumTim` válido (y `dFeIniT` correspondiente). Este repo no firma: el timbrado correcto debe venir del generador que produce el XML.
-
-### 2) Inspeccionar artifacts (`inspect`)
-
-```bash
-python -m sifen_minisender inspect artifacts/run_YYYYmmdd_HHMMSS
+```env
+SMTP_PASS=rpfg shib ytjp lkka
 ```
 
-El comando:
-
-- Muestra resumen de request/response.
-- Extrae `lote.xml` desde `xDE` (Base64 -> ZIP) y lo escribe como `lote_extracted.xml`.
-
-### 3) Consultar resultado de lote (`consult`)
-
-Dado un `dProtConsLote` devuelto por `send`, consulta el estado del lote usando SOAP 1.2 con mTLS y deja artifacts reproducibles.
+Validación rápida:
 
 ```bash
-python -m sifen_minisender consult --env test --prot 47353168697912368
+make check-env
 ```
 
-Por defecto escribe en `artifacts/run_YYYYmmdd_HHMMSS_consult/`, guardando:
+## Quick Start (Mac)
 
-- `soap_last_request.xml`
-- `soap_last_response.xml`
-- `wsdl_last.xml`
-- `meta.json` (incluye `env`, `wsdl_url`, `endpoint`, `soap_action`, `operation`, `prot`, `http_status`, `response_sha256`, etc.)
+1. Copiar variables base:
+
+```bash
+cp .env.example .env
+```
+
+2. Completar `.env` (especialmente credenciales/certificados).
+
+3. Crear directorios persistentes:
+
+```bash
+mkdir -p secrets data data/artifacts data/logs
+```
+
+4. Colocar certificados en `secrets/` (ejemplo: `cert.p12`, `ca-bundle.pem`).
+
+5. Levantar servicios:
+
+```bash
+make up
+```
+
+6. Abrir WebUI:
+
+- [http://localhost:8000](http://localhost:8000)
+
+## Deploy EC2 (Ubuntu)
+
+1. Instalar Docker y plugin Compose:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-plugin
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+2. Clonar repo y entrar al directorio:
+
+```bash
+git clone <REPO_URL> sifen-minisender
+cd sifen-minisender
+```
+
+3. Preparar entorno:
+
+```bash
+cp .env.example .env
+mkdir -p secrets data data/artifacts data/logs
+```
+
+4. Copiar secretos reales a `secrets/` y completar `.env`.
+
+5. Levantar:
+
+```bash
+make up
+```
+
+6. Ver logs:
+
+```bash
+make logs
+```
+
+## Variables base (`.env.example`)
+
+```env
+SMTP_HOST=
+SMTP_PORT=
+SMTP_USER=
+SMTP_PASS=""
+MAIL_FROM=
+SIFEN_ENV=test
+SIFEN_CERT_PATH=/secrets/cert.p12
+SIFEN_CERT_PASSWORD=
+SIFEN_USE_MTLS=true
+SIFEN_CA_BUNDLE_PATH=/secrets/ca-bundle.pem
+SIFEN_DEBUG_SOAP=0
+SIFEN_VALIDATE_XSD=0
+SIFEN_SOAP_COMPAT=
+SIFEN_WEBUI_DB=/data/webui.db
+ARTIFACTS_DIR=/data/artifacts
+```
+
+## Comandos Make
+
+```bash
+make up
+make down
+make logs
+make shell
+make test
+make check-env
+```
+
+### Envío y consulta
+
+Enviar a test (usa `latest` por defecto):
+
+```bash
+make send-test
+```
+
+Enviar un XML específico:
+
+```bash
+make send-test XML=/data/artifacts/mi_rde.xml
+```
+
+Poll test con protocolo:
+
+```bash
+make poll-test PROTO=47353168697912368
+```
+
+Producción:
+
+```bash
+make send-prod XML=/data/artifacts/mi_rde.xml
+make poll-prod PROTO=47353168697912368
+```
+
+## UX de `latest`
+
+`tools/send_sirecepde.py --xml latest` busca `sirecepde_*.xml` en el directorio de artifacts.
+
+Si no existe ninguno:
+
+- usar XML explícito (`--xml /ruta/al/rde.xml`), o
+- generar base de ejemplo:
+
+```bash
+make sample-xml
+```
+
+Helper directo:
+
+```bash
+python -m tools.prepare_xml_latest --xml latest --artifacts-dir /data/artifacts
+```
+
+## Artifacts, debug y dump HTTP
+
+Artifacts persistentes:
+
+- `./data/artifacts`
+
+Activar trazas SOAP/debug en `.env`:
+
+```env
+SIFEN_DEBUG_SOAP=1
+SIFEN_VALIDATE_XSD=1
+```
+
+Luego volver a ejecutar `make send-test` o `make send-prod`.
+
+## Seguridad
+
+- No commitear `.env` real.
+- No commitear contenido de `secrets/`.
+- Si se filtró una credencial/certificado, rotar inmediatamente.

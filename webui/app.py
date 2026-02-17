@@ -37,6 +37,7 @@ from app.sifen_client.xmlsec_signer import sign_de_with_p12, sign_event_with_p12
 from app.sifen_client.config import get_sifen_config
 from app.sifen_client.soap_client import SoapClient
 from app.sifen_client.cdc_utils import calc_dv_mod11
+from sifen_minisender.core_send import send_lote_from_xml
 
 APP_TITLE = "SIFEN WebUI (SQLite)"
 DB_PATH = os.environ.get("SIFEN_WEBUI_DB", os.path.join(os.path.dirname(__file__), "data.db"))
@@ -2485,6 +2486,70 @@ def _start_lote_sync_scheduler(interval_sec: int = 120) -> None:
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
+<<<<<<< HEAD
+=======
+def _artifacts_root() -> Path:
+    root = (_repo_root() / "artifacts").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+def _safe_resolve_under(base_dir: Path, rel_path: str) -> Optional[Path]:
+    try:
+        candidate = (base_dir / rel_path).resolve()
+        if candidate == base_dir or base_dir in candidate.parents:
+            return candidate
+    except Exception:
+        return None
+    return None
+
+def _artifact_relpath(path_value: Optional[str]) -> Optional[str]:
+    if not path_value:
+        return None
+    try:
+        p = Path(path_value).expanduser()
+        if not p.is_absolute():
+            p = (_repo_root() / p).resolve()
+        else:
+            p = p.resolve()
+        root = _artifacts_root()
+        if p == root or root in p.parents:
+            return p.relative_to(root).as_posix()
+    except Exception:
+        return None
+    return None
+
+def _artifact_url(path_value: Optional[str]) -> Optional[str]:
+    rel = _artifact_relpath(path_value)
+    if not rel:
+        return None
+    return url_for("artifact_file", artifact_relpath=rel)
+
+def _latest_send_lote_run() -> Optional[dict]:
+    root = _artifacts_root()
+    for cand in list_recent_artifacts_dirs(root):
+        last_lote = cand / "last_lote.xml"
+        if not last_lote.exists():
+            continue
+        response_json = None
+        response_cands = sorted(
+            cand.glob("response_recepcion_*.json"),
+            key=lambda x: x.stat().st_mtime,
+            reverse=True,
+        )
+        if response_cands:
+            response_json = response_cands[0]
+        return {
+            "run_dir": str(cand),
+            "artifacts": {
+                "last_lote_xml": str(last_lote),
+                "last_xde_zip": str(cand / "last_xde.zip") if (cand / "last_xde.zip").exists() else None,
+                "soap_request": str(cand / "soap_last_request.xml") if (cand / "soap_last_request.xml").exists() else None,
+                "response_json": str(response_json) if response_json else None,
+            },
+        }
+    return None
+
+>>>>>>> cfe374d (WebUI: integrar envío de lote via core + guardrails rDE (orden/gCamFuFD/schema/ref URI))
 def detect_artifacts_dir(parsed: dict, stdout_text: str, env: Optional[dict]) -> str:
     for key in ("Artifacts dir", "Artifacts dir:", "artifacts_dir", "artifacts_dir:"):
         val = (parsed.get(key) or "").strip()
@@ -2678,6 +2743,10 @@ BASE_HTML = """
         </a>
         <a class="btn btn-outline-secondary" href="{{ url_for('customers') }}">Clientes</a>
         <a class="btn btn-outline-secondary" href="{{ url_for('products') }}">Productos</a>
+<<<<<<< HEAD
+=======
+        <a class="btn btn-outline-secondary" href="{{ url_for('send_lote_page') }}">Enviar lote XML</a>
+>>>>>>> cfe374d (WebUI: integrar envío de lote via core + guardrails rDE (orden/gCamFuFD/schema/ref URI))
         <a class="btn btn-primary" href="{{ url_for('invoice_new') }}">Documento nuevo</a>
       </div>
     </div>
@@ -3438,6 +3507,203 @@ def invoices():
 
     return render_template_string(BASE_HTML, title=APP_TITLE, db_path=DB_PATH, body=body)
 
+<<<<<<< HEAD
+=======
+@app.route("/artifacts/<path:artifact_relpath>")
+def artifact_file(artifact_relpath: str):
+    root = _artifacts_root()
+    safe_path = _safe_resolve_under(root, artifact_relpath)
+    if safe_path is None:
+        abort(403, "Ruta inválida.")
+    if not safe_path.exists() or not safe_path.is_file():
+        abort(404)
+    return send_file(safe_path, as_attachment=False)
+
+@app.route("/send-lote", methods=["GET", "POST"])
+def send_lote_page():
+    init_db()
+
+    default_env = (get_setting("default_env", "test") or "test").strip().lower()
+    if default_env not in ("test", "prod"):
+        default_env = "test"
+
+    selected_env = default_env
+    xml_path_value = (get_setting("default_signed_xml_path", "") or "").strip()
+    dump_http_checked = False
+    result = None
+    error = None
+
+    if request.method == "POST":
+        selected_env = (request.form.get("env") or default_env).strip().lower()
+        if selected_env not in ("test", "prod"):
+            selected_env = default_env
+
+        xml_path_value = (request.form.get("xml_path") or "").strip()
+        dump_http_checked = bool(request.form.get("dump_http"))
+        uploaded = request.files.get("xml_upload")
+
+        xml_candidate: Optional[Path] = None
+        if uploaded and uploaded.filename:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            upload_dir = _artifacts_root() / f"webui_send_lote_upload_{ts}"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            upload_name = Path(uploaded.filename).name or "uploaded.xml"
+            xml_candidate = upload_dir / upload_name
+            uploaded.save(str(xml_candidate))
+            xml_path_value = str(xml_candidate)
+        elif xml_path_value:
+            p = Path(xml_path_value).expanduser()
+            if not p.is_absolute():
+                p = (_repo_root() / p).resolve()
+            xml_candidate = p
+
+        if xml_candidate is None:
+            error = "Debés indicar un XML por path o subir un archivo."
+        else:
+            try:
+                result = send_lote_from_xml(
+                    env=selected_env,
+                    xml_path=xml_candidate,
+                    dump_http=dump_http_checked,
+                    artifacts_dir=None,
+                )
+                artifacts = result.get("artifacts") or {}
+                result["artifact_links"] = {
+                    key: _artifact_url(path_value)
+                    for key, path_value in artifacts.items()
+                }
+            except Exception as exc:
+                error = str(exc)
+
+    latest_run = _latest_send_lote_run()
+    if latest_run:
+        latest_artifacts = latest_run.get("artifacts") or {}
+        latest_run["artifact_links"] = {
+            key: _artifact_url(path_value)
+            for key, path_value in latest_artifacts.items()
+        }
+
+    body = render_template_string(
+        """
+        <div class="card">
+          <div class="card-body">
+            <h5 class="mb-3">Enviar lote desde XML firmado</h5>
+            <form method="post" enctype="multipart/form-data" class="row g-3">
+              <div class="col-md-3">
+                <label class="form-label">Ambiente</label>
+                <select class="form-select" name="env">
+                  <option value="test" {% if selected_env == "test" %}selected{% endif %}>TEST</option>
+                  <option value="prod" {% if selected_env == "prod" %}selected{% endif %}>PROD</option>
+                </select>
+              </div>
+              <div class="col-md-9">
+                <label class="form-label">XML path</label>
+                <input class="form-control mono" name="xml_path" value="{{ xml_path_value }}" placeholder="/Users/.../signed_rde.xml">
+              </div>
+              <div class="col-md-9">
+                <label class="form-label">O subir XML</label>
+                <input class="form-control" type="file" name="xml_upload" accept=".xml,text/xml,application/xml">
+              </div>
+              <div class="col-md-3 d-flex align-items-end">
+                <div class="form-check mb-2">
+                  <input class="form-check-input" type="checkbox" id="dump_http" name="dump_http" {% if dump_http_checked %}checked{% endif %}>
+                  <label class="form-check-label" for="dump_http">dump_http</label>
+                </div>
+              </div>
+              <div class="col-12">
+                <button class="btn btn-primary" type="submit">Enviar</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        {% if error %}
+          <div class="alert alert-danger mt-3">{{ error }}</div>
+        {% endif %}
+
+        {% if result %}
+          <div class="card mt-3">
+            <div class="card-body">
+              <h6 class="mb-2">Resultado</h6>
+              <div>success: <span class="mono">{{ result.success }}</span></div>
+              <div>dCodRes: <span class="mono">{{ result.dCodRes or "—" }}</span></div>
+              <div>dMsgRes: {{ result.dMsgRes or "—" }}</div>
+              <div>dProtConsLote: <span class="mono">{{ result.dProtConsLote or "—" }}</span></div>
+              <div class="mt-2">run_dir: <span class="mono">{{ result.run_dir }}</span></div>
+              <div class="mt-2">Artifacts:</div>
+              <ul class="mb-0">
+                <li>last_lote.xml:
+                  {% if result.artifact_links.last_lote_xml %}
+                    <a class="mono" href="{{ result.artifact_links.last_lote_xml }}" target="_blank">abrir</a>
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </li>
+                <li>soap_last_request.xml:
+                  {% if result.artifact_links.soap_request %}
+                    <a class="mono" href="{{ result.artifact_links.soap_request }}" target="_blank">abrir</a>
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </li>
+                <li>last_xde.zip:
+                  {% if result.artifact_links.last_xde_zip %}
+                    <a class="mono" href="{{ result.artifact_links.last_xde_zip }}" target="_blank">descargar</a>
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </li>
+                <li>response_recepcion_*.json:
+                  {% if result.artifact_links.response_json %}
+                    <a class="mono" href="{{ result.artifact_links.response_json }}" target="_blank">abrir</a>
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </li>
+              </ul>
+              {% if result.logs %}
+                <details class="mt-3">
+                  <summary>Logs</summary>
+                  <pre class="mono small mt-2 mb-0">{{ result.logs }}</pre>
+                </details>
+              {% endif %}
+            </div>
+          </div>
+        {% endif %}
+
+        {% if latest_run %}
+          <div class="card mt-3">
+            <div class="card-body">
+              <h6 class="mb-2">Último run</h6>
+              <div class="mono">{{ latest_run.run_dir }}</div>
+              <ul class="mb-0 mt-2">
+                <li>last_lote.xml:
+                  {% if latest_run.artifact_links.last_lote_xml %}
+                    <a class="mono" href="{{ latest_run.artifact_links.last_lote_xml }}" target="_blank">abrir</a>
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </li>
+                <li>soap_last_request.xml:
+                  {% if latest_run.artifact_links.soap_request %}
+                    <a class="mono" href="{{ latest_run.artifact_links.soap_request }}" target="_blank">abrir</a>
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </li>
+                <li>last_xde.zip:
+                  {% if latest_run.artifact_links.last_xde_zip %}
+                    <a class="mono" href="{{ latest_run.artifact_links.last_xde_zip }}" target="_blank">descargar</a>
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </li>
+                <li>response_recepcion_*.json:
+                  {% if latest_run.artifact_links.response_json %}
+                    <a class="mono" href="{{ latest_run.artifact_links.response_json }}" target="_blank">abrir</a>
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </li>
+              </ul>
+            </div>
+          </div>
+        {% endif %}
+        """,
+        selected_env=selected_env,
+        xml_path_value=xml_path_value,
+        dump_http_checked=dump_http_checked,
+        result=result,
+        latest_run=latest_run,
+        error=error,
+    )
+    return render_template_string(BASE_HTML, title="Enviar lote XML", db_path=DB_PATH, body=body)
+
+>>>>>>> cfe374d (WebUI: integrar envío de lote via core + guardrails rDE (orden/gCamFuFD/schema/ref URI))
 @app.route("/invoice/new", methods=["GET", "POST"])
 def invoice_new():
     init_db()

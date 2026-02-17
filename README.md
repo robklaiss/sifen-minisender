@@ -100,3 +100,33 @@ Por defecto escribe en `artifacts/run_YYYYmmdd_HHMMSS_consult/`, guardando:
 - `soap_last_response.xml`
 - `wsdl_last.xml`
 - `meta.json` (incluye `env`, `wsdl_url`, `endpoint`, `soap_action`, `operation`, `prot`, `http_status`, `response_sha256`, etc.)
+
+## Guardrails (CI + local)
+
+### Ejecutar guardrails manualmente
+
+```bash
+.venv/bin/python -m pytest -q tests/test_guardrail_*.py
+```
+
+### Instalar hook local (pre-push)
+
+Comando único:
+
+```bash
+./tools/install-git-hooks.sh
+```
+
+El hook `pre-push` ejecuta automáticamente:
+
+```bash
+/Users/robinklaiss/Dev/sifen-minisender/.venv/bin/python -m pytest -q tests/test_guardrail_*.py
+```
+
+### CI (GitHub Actions)
+
+El workflow `guardrails.yml` corre en cada `push` y `pull_request`, instala dependencias y ejecuta:
+
+```bash
+python -m pytest -q tests/test_guardrail_*.py
+```

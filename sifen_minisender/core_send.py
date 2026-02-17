@@ -6,6 +6,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Optional
 
+from .rde_guards import run_runtime_guardrails
+
 
 def _abs_path(p: Path) -> str:
     try:
@@ -31,6 +33,14 @@ def _pick_response_json(run_dir: Path, explicit_path: Optional[str]) -> Optional
 
 def _artifact_if_exists(path: Path) -> Optional[str]:
     return _abs_path(path) if path.exists() and path.is_file() else None
+
+
+def _run_runtime_guardrails_if_present(artifacts_dir: Path) -> None:
+    run_runtime_guardrails(
+        last_lote_xml=artifacts_dir / "last_lote.xml",
+        last_xde_zip=artifacts_dir / "last_xde.zip",
+        context=f"artifacts_dir={_abs_path(artifacts_dir)}",
+    )
 
 
 def send_lote_from_xml(
@@ -84,6 +94,22 @@ def send_lote_from_xml(
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
 
+    original_recep = getattr(sender, "_recep_lote_with_retry", None)
+    patched_guardrail = callable(original_recep)
+
+    if patched_guardrail:
+        def _guarded_recep(client, payload_xml, dump_http, artifacts_dir):
+            try:
+                target_artifacts_dir = Path(artifacts_dir).expanduser() if artifacts_dir is not None else run_dir
+                _run_runtime_guardrails_if_present(target_artifacts_dir)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"[runtime_guardrail] Falló validación previa al envío: {exc}"
+                ) from exc
+            return original_recep(client, payload_xml, dump_http, artifacts_dir)
+
+        sender._recep_lote_with_retry = _guarded_recep
+
     try:
         with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
             raw = sender.send_sirecepde(
@@ -115,6 +141,9 @@ def send_lote_from_xml(
                 "traceback": traceback.format_exc(),
             },
         }
+    finally:
+        if patched_guardrail:
+            sender._recep_lote_with_retry = original_recep
 
     response = raw.get("response") or {}
     d_cod_res = response.get("codigo_respuesta") or response.get("dCodRes")

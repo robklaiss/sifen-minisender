@@ -24,9 +24,16 @@ webui/data.db
 webui/data.db-shm
 webui/data.db-wal
 data.db
+data/webui.db
+data/webui.db-wal
+data/webui.db-shm
 data/*.db
+data/*.db-*
 data/*.db-shm
 data/*.db-wal
+data/db.sqlite
+data/artifacts/
+data/logs/
 *.bak*
 .env
 *.p12

@@ -1,0 +1,39 @@
+services:
+  web:
+    build:
+      context: .
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    env_file:
+      - .env
+    environment:
+      WEBUI_HOST: 0.0.0.0
+      WEBUI_PORT: 8000
+      SIFEN_WEBUI_DB: ${SIFEN_WEBUI_DB:-/data/webui.db}
+      ARTIFACTS_DIR: ${ARTIFACTS_DIR:-/data/artifacts}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./secrets:/secrets:ro
+      - ./data:/data
+    command: ["webui"]
+    restart: unless-stopped
+
+  cli:
+    build:
+      context: .
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    env_file:
+      - .env
+    environment:
+      SIFEN_WEBUI_DB: ${SIFEN_WEBUI_DB:-/data/webui.db}
+      ARTIFACTS_DIR: ${ARTIFACTS_DIR:-/data/artifacts}
+    volumes:
+      - ./secrets:/secrets:ro
+      - ./data:/data
+    entrypoint: ["bash", "-lc"]
+    stdin_open: true
+    tty: true

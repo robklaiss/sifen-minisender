@@ -3152,6 +3152,12 @@ def backup_status():
     }
 
 
+@app.get("/health")
+@app.get("/healthz")
+def health_check():
+    return jsonify({"ok": True}), 200
+
+
 def autodetect_signed_rde_path() -> str:
     """Devuelve el signed_rde.xml más reciente desde ../tesaka-if/artifacts si existe."""
     try:

@@ -82,6 +82,11 @@ make up
 
 - [http://localhost:8000](http://localhost:8000)
 
+## Health Check (ALB)
+
+- `GET /health` devuelve HTTP `200` con JSON `{"ok": true}` para health checks de AWS ALB Target Groups.
+- `GET /healthz` es alias del mismo handler.
+
 ## Deploy EC2 (Ubuntu)
 
 1. Instalar Docker y plugin Compose:

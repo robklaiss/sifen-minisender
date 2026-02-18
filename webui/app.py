@@ -2169,6 +2169,24 @@ def recompute_invoice_totals(invoice_id: int):
     con.commit()
 
 
+def resolve_minisender_python() -> str:
+    env_python = (
+        (os.getenv("MINISENDER_PY") or "").strip()
+        or (os.getenv("WEBUI_MINISENDER_PY") or "").strip()
+    )
+    if env_python:
+        app.logger.debug("minisender python selected from env var: %s", env_python)
+        return env_python
+
+    current_python = (sys.executable or "").strip()
+    if current_python:
+        app.logger.debug("minisender python selected from sys.executable: %s", current_python)
+        return current_python
+
+    app.logger.debug("minisender python fallback selected: python3")
+    return "python3"
+
+
 def run_minisender(args, cwd=None, env=None):
     """Ejecuta minisender como subprocess y retorna (code, stdout, stderr)."""
     proc = subprocess.run(
@@ -2315,7 +2333,7 @@ def _consult_lote_and_update(
     sleep_between: int = 2,
 ) -> str:
     repo_root_path = _repo_root()
-    venv_py = str(repo_root_path / ".venv" / "bin" / "python")
+    minisender_py = resolve_minisender_python()
     env_used = os.environ.copy()
     last_art_dir = normalize_artifacts_dir(prefer_art_dir or "") or ""
     artifacts_root = _artifacts_root()
@@ -2323,7 +2341,7 @@ def _consult_lote_and_update(
 
     for idx in range(max(1, attempts)):
         args = [
-            venv_py, "-m", "sifen_minisender", "consult",
+            minisender_py, "-m", "sifen_minisender", "consult",
             "--env", env,
             "--prot", prot,
             "--artifacts-dir", str(artifacts_root),
@@ -3084,9 +3102,9 @@ def _diagnostics_dry_run() -> dict:
 
 def _diagnostics_consult_lote(env: str, prot: str) -> dict:
     repo_root = _repo_root()
-    venv_py = str(repo_root / ".venv" / "bin" / "python")
+    minisender_py = resolve_minisender_python()
     args = [
-        venv_py, "-m", "sifen_minisender", "consult",
+        minisender_py, "-m", "sifen_minisender", "consult",
         "--env", env,
         "--prot", prot,
         "--artifacts-dir", str(_artifacts_root()),
@@ -5514,10 +5532,10 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
 
     # enviar a SIFEN
     repo_root_path = _repo_root()
-    venv_py = str(repo_root_path / ".venv" / "bin" / "python")
+    minisender_py = resolve_minisender_python()
     artifacts_root = _artifacts_root()
     args = [
-        venv_py, "-m", "sifen_minisender", "send",
+        minisender_py, "-m", "sifen_minisender", "send",
         "--env", env,
         "--artifacts-root", str(artifacts_root),
         rel_signed,
@@ -5731,9 +5749,9 @@ def invoice_send_test(invoice_id: int):
         abort(400, "No pude resolver automáticamente el XML firmado. Abrí /invoice/<id> y seteá source_xml_path, o asegurate de tener artifacts con DE_TAL_CUAL_TRANSMITIDO.xml.")
     # Ejecutar minisender desde repo raíz (un nivel arriba de webui)
     repo_root = str(repo_root_path)
-    venv_py = str(repo_root_path / ".venv" / "bin" / "python")
+    minisender_py = resolve_minisender_python()
     args = [
-        venv_py, "-m", "sifen_minisender", "send",
+        minisender_py, "-m", "sifen_minisender", "send",
         "--env", "test",
         "--artifacts-root", str(_artifacts_root()),
         xml_path,

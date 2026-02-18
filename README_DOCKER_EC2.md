@@ -50,6 +50,21 @@ Notas:
   - `SIFEN_CERT_PATH` y `SIFEN_KEY_PATH` desde `.env` apuntando al volumen `/secrets`
 - Artifacts persisten en `./data/artifacts` (host) montado como `/data/artifacts` (contenedor).
 - `./secrets` se monta read-only como `/secrets`.
+- WebUI usa por defecto `sys.executable` para correr `sifen_minisender` (no requiere `/app/.venv`).
+- Override opcional: `MINISENDER_PY=/usr/bin/python3` (o `WEBUI_MINISENDER_PY`) en `.env`.
+
+## Fix: SQLite readonly (`webui.db`)
+
+El contenedor corre con `user: "${UID:-1000}:${GID:-1000}"`. El host debe permitir escritura de ese UID/GID sobre `./data` y `./data/webui.db` (incluyendo archivos WAL/SHM que crea SQLite).
+
+En EC2:
+
+```bash
+cd /opt/sifen-minisender
+export UID=1000 GID=1000
+./scripts/fix_data_perms.sh
+sudo docker compose up -d --build
+```
 
 ## 4) Build + run del servicio
 

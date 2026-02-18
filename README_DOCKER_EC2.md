@@ -53,7 +53,7 @@ Notas:
 - WebUI usa por defecto `sys.executable` para correr `sifen_minisender` (no requiere `/app/.venv`).
 - Override opcional: `MINISENDER_PY=/usr/bin/python3` (o `WEBUI_MINISENDER_PY`) en `.env`.
 
-## Fix: SQLite readonly (`webui.db`)
+## Fix: SQLite readonly (webui.db)
 
 El contenedor corre con `user: "${UID:-1000}:${GID:-1000}"`. El host debe permitir escritura de ese UID/GID sobre `./data` y `./data/webui.db` (incluyendo archivos WAL/SHM que crea SQLite).
 
@@ -63,7 +63,7 @@ En EC2:
 cd /opt/sifen-minisender
 export UID=1000 GID=1000
 ./scripts/fix_data_perms.sh
-sudo docker compose up -d --build
+sudo docker compose up -d --force-recreate
 ```
 
 ## 4) Build + run del servicio

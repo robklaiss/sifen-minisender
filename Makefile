@@ -7,7 +7,7 @@ RETRIES ?= 6
 SLEEP ?= 10
 ARTIFACTS_DIR ?= /data/artifacts
 
-.PHONY: up down logs shell test check-env sample-xml send-test poll-test send-prod poll-prod smoke-local
+.PHONY: up down logs shell test check-env sample-xml send-test poll-test send-prod poll-prod smoke-local fix-perms
 
 up:
 	$(COMPOSE) up -d --build
@@ -53,3 +53,6 @@ poll-prod:
 
 smoke-local:
 	./.venv/bin/python tools/smoke.py --env test
+
+fix-perms:
+	./scripts/fix_data_perms.sh

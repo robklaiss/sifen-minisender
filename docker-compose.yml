@@ -1,5 +1,6 @@
 services:
   web:
+    user: "${UID:-1000}:${GID:-1000}"
     build:
       context: .
       args:
@@ -21,6 +22,7 @@ services:
     restart: unless-stopped
 
   cli:
+    user: "${UID:-1000}:${GID:-1000}"
     build:
       context: .
       args:

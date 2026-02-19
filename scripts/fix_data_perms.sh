@@ -5,9 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
+TARGET_UID="${TARGET_UID:-${PUID:-$(id -u)}}"
+TARGET_GID="${TARGET_GID:-${PGID:-$(id -g)}}"
+
 mkdir -p ./data ./data/logs ./data/artifacts
 
-chown -R "${UID:-1000}:${GID:-1000}" ./data
+chown -R "${TARGET_UID}:${TARGET_GID}" ./data
 
 chmod 775 ./data ./data/logs ./data/artifacts
 

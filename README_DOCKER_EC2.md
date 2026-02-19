@@ -61,8 +61,8 @@ En EC2:
 
 ```bash
 cd /opt/sifen-minisender
-export UID=1000 GID=1000
-./scripts/fix_data_perms.sh
+export TARGET_UID=1000 TARGET_GID=1000
+sudo -E ./scripts/fix_data_perms.sh
 sudo docker compose up -d --force-recreate
 ```
 

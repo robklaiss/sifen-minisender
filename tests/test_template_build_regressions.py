@@ -31,12 +31,28 @@ def _doc_extra_for(doc_type: str) -> dict:
         extra["transporte"] = extra.get("transporte") or {
             "iTipTrans": "1",
             "iModTrans": "1",
-            "transportista": {
+            "iRespFlete": "1",
+            "salida": {
+                "direccion": "Sucursal salida",
+                "numCasa": "100",
+                "departamento": "12",
+                "distrito": "154",
+                "ciudad": "5044",
+                "telefono": "021000000",
+            },
+            "entrega": {
+                "direccion": "Sucursal entrega",
+                "numCasa": "200",
+                "departamento": "12",
+                "distrito": "154",
+                "ciudad": "5044",
+                "telefono": "021000001",
+            },
+            "vehiculo": {
                 "tipo": "1",
-                "numeroTr": "8001234-5",
-                "nombreTr": "Transportista SA",
-                "nombreCh": "Chofer Demo",
-                "numeroCh": "1234567",
+                "marca": "Toyota",
+                "documentoTipo": "1",
+                "numeroIden": "ABC123",
             },
         }
     return extra
@@ -134,3 +150,18 @@ def test_decimal_qty_totals_and_qr_update(app_ctx):
     updated, _ = webapp._update_qr_in_signed_xml(xml_text, "A62e367A738D1050E364D9680f9E4a79", "1")
     assert "TESTQRCODE" not in updated
     assert "cHashQR=" in updated
+
+
+def test_remision_build_populates_gtransp_minimum(app_ctx):
+    webapp.set_setting("timbrado_num", "18578288")
+    webapp.set_setting("timbrado_fe_ini", "2026-01-14")
+    out = _build("7", "0000012", datetime(2026, 2, 10, 8, 0, 0))
+    root = _parse(out["xml_bytes"])
+
+    gtransp = root.find(".//s:gDtipDE/s:gTransp", NS)
+    assert gtransp is not None
+    assert gtransp.find("s:iModTrans", NS) is not None
+    assert (gtransp.find("s:iModTrans", NS).text or "").strip() != ""
+    assert gtransp.find("s:gCamSal", NS) is not None
+    assert gtransp.find("s:gCamEnt", NS) is not None
+    assert gtransp.find("s:gVehTras", NS) is not None

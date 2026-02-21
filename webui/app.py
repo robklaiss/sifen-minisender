@@ -1103,6 +1103,200 @@ def _fill_geo_desc_in(parent: Optional[ET.Element], code_tag: str, desc_tag: str
     if name:
         _ensure_child_ns(parent, desc_tag, ns_uri).text = name
 
+def _build_gtransp_from_extra(gdtip: ET.Element, ns_uri: str, transporte_dict: dict) -> None:
+    if not isinstance(transporte_dict, dict):
+        raise RuntimeError("doc_extra_json.transporte inválido para Remisión (iTiDE=7).")
+
+    def _s(value) -> str:
+        return str(value).strip() if value is not None else ""
+
+    def _date_only(value) -> str:
+        raw = _s(value)
+        return raw.split(" ")[0] if raw else ""
+
+    def _set_opt(parent: ET.Element, tag: str, value: str) -> None:
+        if value:
+            _ensure_child_ns(parent, tag, ns_uri).text = value
+
+    gtransp = _ensure_child_ns(gdtip, "gTransp", ns_uri)
+    for child in list(gtransp):
+        gtransp.remove(child)
+
+    i_tip_trans = _s(transporte_dict.get("iTipTrans") or transporte_dict.get("tipoTransporte"))
+    if i_tip_trans:
+        _ensure_child_ns(gtransp, "iTipTrans", ns_uri).text = i_tip_trans
+        _ensure_child_ns(gtransp, "dDesTipTrans", ns_uri).text = TRANS_TIPO_MAP.get(i_tip_trans, "Tercero")
+
+    i_mod = _s(transporte_dict.get("iModTrans") or transporte_dict.get("modalidad"))
+    if i_mod not in TRANS_MOD_MAP:
+        raise RuntimeError("Transporte: falta modalidad (iModTrans 1-4).")
+    _ensure_child_ns(gtransp, "iModTrans", ns_uri).text = i_mod
+    _ensure_child_ns(gtransp, "dDesModTrans", ns_uri).text = TRANS_MOD_MAP.get(i_mod, "Terrestre")
+
+    i_resp_flete = _s(transporte_dict.get("iRespFlete") or transporte_dict.get("tipoResponsable"))
+    if i_resp_flete not in RESP_FLETE_MAP:
+        raise RuntimeError("Transporte: falta tipoResponsable (iRespFlete 1-5).")
+    _ensure_child_ns(gtransp, "iRespFlete", ns_uri).text = i_resp_flete
+
+    _set_opt(gtransp, "cCondNeg", _s(transporte_dict.get("condNeg")))
+    _set_opt(gtransp, "dNuManif", _s(transporte_dict.get("numManif")))
+    _set_opt(gtransp, "dNuDespImp", _s(transporte_dict.get("despachoImp")))
+    _set_opt(gtransp, "dIniTras", _date_only(transporte_dict.get("iniFechaEstimadaTrans")))
+    _set_opt(gtransp, "dFinTras", _date_only(transporte_dict.get("finFechaEstimadaTrans")))
+    pais_dest = _s(transporte_dict.get("paisDest"))
+    if pais_dest:
+        _ensure_child_ns(gtransp, "cPaisDest", ns_uri).text = pais_dest
+        _set_opt(gtransp, "dDesPaisDest", _s(transporte_dict.get("paisDestDesc")))
+
+    def _build_loc(parent: ET.Element, tag: str, loc_data: dict, suffix: str, label: str) -> None:
+        if not isinstance(loc_data, dict):
+            raise RuntimeError(f"Transporte {label}: bloque inválido.")
+        d_dir = _s(loc_data.get("direccion"))
+        d_num = _s(loc_data.get("numCasa"))
+        c_dep = _zfill_digits(loc_data.get("departamento"), 2)
+        c_dis = _zfill_digits(loc_data.get("distrito"), 4)
+        c_ciu = _zfill_digits(loc_data.get("ciudad"), 5)
+        if not d_dir:
+            raise RuntimeError(f"Transporte {label}: falta direccion.")
+        if not d_num:
+            raise RuntimeError(f"Transporte {label}: falta numCasa.")
+        if not c_dep:
+            raise RuntimeError(f"Transporte {label}: falta departamento.")
+        if not c_ciu:
+            raise RuntimeError(f"Transporte {label}: falta ciudad.")
+
+        loc = _ensure_child_ns(parent, tag, ns_uri)
+        _ensure_child_ns(loc, f"dDirLoc{suffix}", ns_uri).text = d_dir
+        _ensure_child_ns(loc, f"dNumCas{suffix}", ns_uri).text = d_num
+        _set_opt(loc, f"dComp1{suffix}", _s(loc_data.get("comp1")))
+        _set_opt(loc, f"dComp2{suffix}", _s(loc_data.get("comp2")))
+        _ensure_child_ns(loc, f"cDep{suffix}", ns_uri).text = c_dep
+        _ensure_child_ns(loc, f"dDesDep{suffix}", ns_uri).text = _geo_name("dep", c_dep) or "CAPITAL"
+        if c_dis:
+            _ensure_child_ns(loc, f"cDis{suffix}", ns_uri).text = c_dis
+            _ensure_child_ns(loc, f"dDesDis{suffix}", ns_uri).text = _geo_name("dist", c_dis) or "ASUNCION"
+        _ensure_child_ns(loc, f"cCiu{suffix}", ns_uri).text = c_ciu
+        _ensure_child_ns(loc, f"dDesCiu{suffix}", ns_uri).text = _geo_name("city", c_ciu) or "ASUNCION (DISTRITO)"
+        _set_opt(loc, f"dTel{suffix}", _s(loc_data.get("telefono")))
+
+    _build_loc(gtransp, "gCamSal", transporte_dict.get("salida") or {}, "Sal", "salida")
+    _build_loc(gtransp, "gCamEnt", transporte_dict.get("entrega") or {}, "Ent", "entrega")
+
+    veh = transporte_dict.get("vehiculo") or {}
+    if not isinstance(veh, dict):
+        veh = {}
+    veh_tipo = _s(veh.get("tipo"))
+    veh_marca = _s(veh.get("marca"))
+    veh_doc_tipo = _s(veh.get("documentoTipo"))
+    veh_num = _s(veh.get("numeroIden") or veh.get("numeroMat"))
+    if not veh_tipo:
+        raise RuntimeError("Vehículo: falta tipo.")
+    if not veh_marca:
+        raise RuntimeError("Vehículo: falta marca.")
+    if veh_doc_tipo not in ("1", "2"):
+        raise RuntimeError("Vehículo: falta documentoTipo (dTipIdenVeh=1|2).")
+    if not veh_num:
+        raise RuntimeError("Vehículo: falta numeroIden / numeroMat.")
+
+    gveh = _ensure_child_ns(gtransp, "gVehTras", ns_uri)
+    _ensure_child_ns(gveh, "dTiVehTras", ns_uri).text = VEH_TIPO_MAP.get(veh_tipo, veh_tipo)
+    _ensure_child_ns(gveh, "dMarVeh", ns_uri).text = veh_marca
+    _ensure_child_ns(gveh, "dTipIdenVeh", ns_uri).text = veh_doc_tipo
+    if veh_doc_tipo == "1":
+        _ensure_child_ns(gveh, "dNroMatVeh", ns_uri).text = veh_num
+    else:
+        _ensure_child_ns(gveh, "dNroIDVeh", ns_uri).text = veh_num
+    _set_opt(gveh, "dAdicVeh", _s(veh.get("adic")))
+    _set_opt(gveh, "dNroVuelo", _s(veh.get("numeroVuelo")))
+
+    trans = transporte_dict.get("transportista") or {}
+    if not isinstance(trans, dict):
+        trans = {}
+    # Matriz Fase 1: gCamTrans opcional solo cuando iModTrans=1 y dTipIdenVeh=1.
+    camtrans_required = not (i_mod == "1" and veh_doc_tipo == "1")
+    if camtrans_required and not trans:
+        raise RuntimeError("Transportista: bloque requerido para esta modalidad de transporte.")
+    if trans:
+        gcamtrans = _ensure_child_ns(gtransp, "gCamTrans", ns_uri)
+        nat = _s(trans.get("iNatTrans") or trans.get("tipo")) or "1"
+        nom = _s(trans.get("dNomTrans") or trans.get("nombreTr"))
+        num_tr = _s(trans.get("numeroTr") or trans.get("dNumIDTrans"))
+        tip_id_trans = _s(trans.get("iTipIDTrans") or trans.get("tipoDocumentoTr"))
+        num_ch = _s(trans.get("dNumIDChof") or trans.get("numeroCh"))
+        nom_ch = _s(trans.get("dNomChof") or trans.get("nombreCh"))
+        dom_fisc = _s(trans.get("dDomFisc") or trans.get("direccionTr"))
+        dir_ch = _s(trans.get("dDirChof") or trans.get("direccionCh"))
+        if not nom:
+            raise RuntimeError("Transportista: falta nombreTr.")
+        if not num_ch:
+            raise RuntimeError("Transportista: falta numeroCh.")
+        if not nom_ch:
+            raise RuntimeError("Transportista: falta nombreCh.")
+        if not dom_fisc:
+            raise RuntimeError("Transportista: falta direccionTr.")
+        if not dir_ch:
+            raise RuntimeError("Transportista: falta direccionCh.")
+
+        _ensure_child_ns(gcamtrans, "iNatTrans", ns_uri).text = nat
+        _ensure_child_ns(gcamtrans, "dNomTrans", ns_uri).text = nom
+
+        ruc_trans, dv_trans = _split_ruc_dv(num_tr)
+        if ruc_trans:
+            _ensure_child_ns(gcamtrans, "dRucTrans", ns_uri).text = ruc_trans
+            if dv_trans:
+                _ensure_child_ns(gcamtrans, "dDVTrans", ns_uri).text = dv_trans
+        else:
+            if tip_id_trans:
+                _ensure_child_ns(gcamtrans, "iTipIDTrans", ns_uri).text = tip_id_trans
+                _ensure_child_ns(gcamtrans, "dDTipIDTrans", ns_uri).text = AFE_ID_MAP.get(tip_id_trans, "Cédula paraguaya")
+            if num_tr:
+                _ensure_child_ns(gcamtrans, "dNumIDTrans", ns_uri).text = num_tr
+
+        c_nac = _s(trans.get("cNacTrans") or trans.get("nacionalidad"))
+        if c_nac:
+            _ensure_child_ns(gcamtrans, "cNacTrans", ns_uri).text = c_nac
+            _set_opt(gcamtrans, "dDesNacTrans", _s(trans.get("dDesNacTrans")))
+
+        _ensure_child_ns(gcamtrans, "dNumIDChof", ns_uri).text = num_ch
+        _ensure_child_ns(gcamtrans, "dNomChof", ns_uri).text = nom_ch
+        _ensure_child_ns(gcamtrans, "dDomFisc", ns_uri).text = dom_fisc
+        _ensure_child_ns(gcamtrans, "dDirChof", ns_uri).text = dir_ch
+
+def _validate_remision_transport_before_sign(xml_bytes: bytes) -> None:
+    ns_uri = "http://ekuatia.set.gov.py/sifen/xsd"
+    ns = {"s": ns_uri}
+    root = ET.fromstring(xml_bytes)
+    gtransp = root.find(".//s:gDtipDE/s:gTransp", ns)
+    if gtransp is None:
+        raise RuntimeError("Remisión inválida antes de firmar: falta gTransp.")
+    if len(list(gtransp)) == 0:
+        raise RuntimeError("Remisión inválida antes de firmar: gTransp no puede estar vacío.")
+
+    def _has_text(path: str) -> bool:
+        el = gtransp.find(path, ns)
+        return el is not None and bool((el.text or "").strip())
+
+    missing = []
+    if not _has_text("s:iModTrans"):
+        missing.append("iModTrans")
+    if not _has_text("s:iRespFlete"):
+        missing.append("iRespFlete")
+    if gtransp.find("s:gCamSal", ns) is None:
+        missing.append("gCamSal")
+    if gtransp.find("s:gCamEnt", ns) is None:
+        missing.append("gCamEnt")
+    gveh = gtransp.find("s:gVehTras", ns)
+    if gveh is None:
+        missing.append("gVehTras")
+    i_mod = (gtransp.findtext("s:iModTrans", default="", namespaces=ns) or "").strip()
+    veh_tip = (gtransp.findtext("s:gVehTras/s:dTipIdenVeh", default="", namespaces=ns) or "").strip()
+    needs_camtrans = not (i_mod == "1" and veh_tip == "1")
+    if needs_camtrans and gtransp.find("s:gCamTrans", ns) is None:
+        missing.append("gCamTrans")
+
+    if missing:
+        raise RuntimeError("Remisión inválida antes de firmar: faltan " + ", ".join(missing) + " en gTransp.")
+
 def _build_invoice_xml_from_template(
     *,
     template_path: str,
@@ -1325,6 +1519,113 @@ def _build_invoice_xml_from_template(
             _ensure_child_ns(gpa, "cMoneTiPag", ns_uri).text = "PYG"
             _ensure_child_ns(gpa, "dDMoneTiPag", ns_uri).text = "Guarani"
 
+    # Ítems y totales base (necesarios para CDC, PDF y gTotSub)
+    if not lines:
+        raise RuntimeError("La factura no tiene líneas.")
+
+    qty_places = _infer_places_from_xpath(root, ".//s:gDtipDE/s:gCamItem/s:dCantProSer", ns, 2)
+    money_places_default = _infer_places_from_xpath(root, ".//s:gDtipDE/s:gCamItem/s:gValorItem/s:dPUniProSer", ns, 0)
+    base_places = _infer_places_from_xpath(root, ".//s:gDtipDE/s:gCamItem/s:gCamIVA/s:dBasGravIVA", ns, 4)
+    iva_places = _infer_places_from_xpath(root, ".//s:gDtipDE/s:gCamItem/s:gCamIVA/s:dLiqIVAItem", ns, 4)
+
+    sub_exe = Decimal("0")
+    sub_exo = Decimal("0")
+    sub5 = Decimal("0")
+    sub10 = Decimal("0")
+    base5 = Decimal("0")
+    base10 = Decimal("0")
+    iva5 = Decimal("0")
+    iva10 = Decimal("0")
+    total = Decimal("0")
+    items_for_pdf = []
+
+    existing_items = gdtip.findall("s:gCamItem", ns)
+    if not existing_items:
+        raise RuntimeError("La plantilla no contiene gCamItem.")
+    item_template = copy.deepcopy(existing_items[0])
+    for it in existing_items:
+        gdtip.remove(it)
+
+    for idx, line in enumerate(lines, start=1):
+        desc = str(_line_get(line, "description", "") or f"Item {idx}")
+        qty = _to_decimal(_line_get(line, "qty"), Decimal("0")) or Decimal("0")
+        price_unit = _to_decimal(_line_get(line, "price_unit"), Decimal("0")) or Decimal("0")
+        line_total = _to_decimal(_line_get(line, "line_total"), None)
+        if line_total is None:
+            line_total = qty * price_unit
+
+        try:
+            iva_rate = int(str(_line_get(line, "iva_rate", 10) or "10"))
+        except Exception:
+            iva_rate = 10
+        if iva_rate not in (0, 5, 10):
+            iva_rate = 10
+
+        item = copy.deepcopy(item_template)
+        _update_text(item, "s:dCodInt", str(idx).zfill(3), ns)
+        _update_text(item, "s:dDesProSer", desc, ns)
+        _update_text(item, "s:dCantProSer", _fmt_decimal_places(qty, qty_places), ns)
+
+        gvalor = item.find("s:gValorItem", ns)
+        giva = item.find("s:gCamIVA", ns)
+
+        if doc_type == "7":
+            if gvalor is not None:
+                item.remove(gvalor)
+            if giva is not None:
+                item.remove(giva)
+        else:
+            _update_text(item, "s:gValorItem/s:dPUniProSer", _fmt_decimal_places(price_unit, money_places_default), ns)
+            _update_text(item, "s:gValorItem/s:dTotBruOpeItem", _fmt_decimal_places(line_total, money_places_default), ns)
+            _update_text(item, "s:gValorItem/s:gValorRestaItem/s:dTotOpeItem", _fmt_decimal_places(line_total, money_places_default), ns)
+
+            if giva is not None and doc_type != "4":
+                if iva_rate in (5, 10):
+                    divisor = Decimal("1.05") if iva_rate == 5 else Decimal("1.10")
+                    base_line = (line_total / divisor).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
+                    iva_line = (line_total - base_line).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
+                else:
+                    base_line = Decimal("0")
+                    iva_line = Decimal("0")
+                _update_text(item, "s:gCamIVA/s:dTasaIVA", str(iva_rate), ns)
+                _update_text(item, "s:gCamIVA/s:dBasGravIVA", _fmt_decimal_places(base_line, base_places), ns)
+                _update_text(item, "s:gCamIVA/s:dLiqIVAItem", _fmt_decimal_places(iva_line, iva_places), ns)
+                _update_text(item, "s:gCamIVA/s:dBasExe", "0", ns)
+
+        gdtip.append(item)
+
+        total += line_total
+        if doc_type != "7":
+            if iva_rate == 5:
+                sub5 += line_total
+                base_line = (line_total / Decimal("1.05")).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
+                base5 += base_line
+                iva5 += (line_total - base_line).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
+            elif iva_rate == 10:
+                sub10 += line_total
+                base_line = (line_total / Decimal("1.10")).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
+                base10 += base_line
+                iva10 += (line_total - base_line).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
+            else:
+                sub_exe += line_total
+
+        items_for_pdf.append(
+            {
+                "descripcion": desc,
+                "cantidad": float(qty),
+                "precio_unit": float(price_unit),
+                "iva": str(iva_rate),
+                "total": float(line_total),
+            }
+        )
+
+    iva_total = (iva5 + iva10).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
+    base_total = (base5 + base10).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
+    total_str = _fmt_decimal_places(total, money_places_default)
+    base_total_str = _fmt_decimal_places(base_total, base_places)
+    iva_total_str = _fmt_decimal_places(iva_total, iva_places)
+    cdc_total_str = _fmt_decimal_places(total, 0)
+
     # Completar descripciones geográficas en emisor/receptor/autofactura
     g_emis = root.find(".//s:gEmis", ns)
     _fill_geo_desc_in(g_emis, "cDepEmi", "dDesDepEmi", "dep", ns_uri)
@@ -1349,15 +1650,13 @@ def _build_invoice_xml_from_template(
     if doc_type in ("4", "5", "6"):
         _remove_child_ns(gdtip, "gTransp", ns_uri)
     else:
-        transporte = extra_json.get("transporte")
-        if transporte and isinstance(transporte, list):
-            transporte = transporte[0] if transporte else None
+        transporte = _get_transport_from_extra(extra_json)
         if doc_type == "7" and not transporte:
             raise RuntimeError("doc_extra_json.transporte requerido para Remisión (iTiDE=7).")
         if transporte:
-            gtransp = _ensure_child_ns(gdtip, "gTransp", ns_uri)
+            _build_gtransp_from_extra(gdtip, ns_uri, transporte)
 
-            # Asegurar orden XSD en gDtipDE: gCamNRE, gCamCond, gTransp, gCamItem
+            # Asegurar orden XSD en gDtipDE: gCamNRE, gCamCond, gCamItem, gTransp
             try:
                 kids = list(gdtip)
 
@@ -1429,6 +1728,8 @@ def _build_invoice_xml_from_template(
                         _move_after(tr, cond or nre)
             except Exception:
                 pass
+        elif doc_type == "1":
+            _remove_child_ns(gdtip, "gTransp", ns_uri)
     _update_text(root, ".//s:gDtipDE/s:gCamCond/s:gPaConEIni/s:dMonTiPag", total_str, ns)
 
     if doc_type != "7":
@@ -5030,6 +5331,97 @@ def invoice_enqueue(invoice_id: int):
     _enqueue_invoice(invoice_id, env)
     return redirect(url_for("invoice_detail", invoice_id=invoice_id))
 
+@app.route("/api/invoices/<int:invoice_id>/dry-run", methods=["POST"])
+def api_invoice_dry_run(invoice_id: int):
+    init_db()
+    con = get_db()
+    payload = request.get_json(silent=True) or request.form or {}
+    persist_source_xml = _parse_bool(payload.get("persist_source_xml"), default=False)
+
+    inv = con.execute(
+        """
+        SELECT i.*, c.name AS customer_name, c.ruc AS customer_ruc, c.email AS customer_email
+        FROM invoices i JOIN customers c ON c.id=i.customer_id
+        WHERE i.id=?
+        """,
+        (invoice_id,),
+    ).fetchone()
+    if not inv:
+        return jsonify({"ok": False, "error": "invoice not found"}), 404
+
+    doc_type = normalize_doc_type(inv["doc_type"])
+    try:
+        extra_json = _parse_extra_json(inv["doc_extra_json"], doc_type)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    errors = _validate_doc_extra(doc_type, extra_json)
+    if errors:
+        return jsonify({"ok": False, "error": "Errores de validación", "details": errors}), 400
+
+    template_path = _template_for_doc_type(doc_type)
+    if not template_path or not Path(template_path).exists():
+        return jsonify({"ok": False, "error": f"Plantilla no configurada para {doc_type_label(doc_type)}"}), 400
+
+    lines = con.execute(
+        "SELECT * FROM invoice_lines WHERE invoice_id=? ORDER BY id ASC",
+        (invoice_id,),
+    ).fetchall()
+    if not lines:
+        return jsonify({"ok": False, "error": "La factura no tiene líneas."}), 400
+
+    dnumdoc = _ensure_doc_number(con, inv, invoice_id)
+    issue_dt = _ensure_signed_at(con, inv, invoice_id)
+    codseg = _ensure_codseg(con, inv, invoice_id)
+    est = (inv["establishment"] or "").strip() if "establishment" in inv.keys() else ""
+    pun = (inv["point_exp"] or "").strip() if "point_exp" in inv.keys() else ""
+
+    try:
+        build = _build_invoice_xml_from_template(
+            template_path=template_path,
+            invoice_id=invoice_id,
+            customer={"name": inv["customer_name"], "ruc": inv["customer_ruc"]},
+            lines=lines,
+            doc_number=dnumdoc,
+            doc_type=doc_type,
+            extra_json=extra_json,
+            issue_dt=issue_dt,
+            codseg=codseg,
+            establishment=est,
+            point_exp=pun,
+        )
+        base_dir, _, rel_signed = _create_signed_qr_artifacts(
+            invoice_id=invoice_id,
+            build=build,
+            doc_type=doc_type,
+            run_prefix="webui_dryrun",
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    if persist_source_xml:
+        con.execute(
+            "UPDATE invoices SET issued_at=COALESCE(issued_at,?), source_xml_path=? WHERE id=?",
+            (issue_dt.isoformat(timespec="seconds"), rel_signed, invoice_id),
+        )
+        con.commit()
+
+    return jsonify(
+        {
+            "ok": True,
+            "invoice_id": invoice_id,
+            "doc_type": doc_type,
+            "doc_type_label": doc_type_label(doc_type),
+            "dry_run": True,
+            "sent": False,
+            "persist_source_xml": persist_source_xml,
+            "source_xml_path": rel_signed if persist_source_xml else None,
+            "artifacts_dir": str(base_dir),
+            "artifact_links": _artifact_links_for_dir(str(base_dir)),
+            "cdc": build.get("cdc"),
+            "dnumdoc": build.get("dnumdoc"),
+        }
+    )
+
 @app.route("/invoice/<int:invoice_id>/cancel", methods=["POST"])
 def invoice_cancel(invoice_id: int):
     init_db()
@@ -5229,6 +5621,47 @@ def invoice_inutil(invoice_id: int):
     con.commit()
     return redirect(url_for("invoice_detail", invoice_id=invoice_id))
 
+def _create_signed_qr_artifacts(
+    *,
+    invoice_id: int,
+    build: dict,
+    doc_type: str,
+    run_prefix: str,
+) -> tuple[Path, str, str]:
+    if doc_type == "7":
+        _validate_remision_transport_before_sign(build["xml_bytes"])
+
+    base_dir = _artifacts_root() / f"{run_prefix}_{invoice_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    in_path = base_dir / f"rde_input_{build['dnumdoc']}.xml"
+    in_path.write_bytes(build["xml_bytes"])
+
+    p12_path = os.getenv("SIFEN_SIGN_P12_PATH") or os.getenv("SIFEN_P12_PATH") or os.getenv("SIFEN_CERT_PATH")
+    p12_password = os.getenv("SIFEN_SIGN_P12_PASSWORD") or os.getenv("SIFEN_P12_PASSWORD") or os.getenv("SIFEN_CERT_PASSWORD")
+    if not p12_path or not p12_password:
+        raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar.")
+
+    signed_bytes = sign_de_with_p12(build["xml_bytes"], p12_path, p12_password)
+    signed_path = base_dir / f"rde_signed_{build['dnumdoc']}.xml"
+    signed_path.write_bytes(signed_bytes)
+
+    csc = (os.getenv("SIFEN_CSC") or "").strip()
+    csc_id = (os.getenv("SIFEN_CSC_ID") or "0001").strip()
+    if not csc:
+        raise RuntimeError("Falta SIFEN_CSC para generar QR.")
+
+    signed_qr_text, qr_debug = _update_qr_in_signed_xml(signed_bytes.decode("utf-8"), csc, csc_id)
+    signed_qr_path = base_dir / f"rde_signed_qr_{build['dnumdoc']}.xml"
+    signed_qr_path.write_text(signed_qr_text, encoding="utf-8")
+    (base_dir / f"qr_debug_{build['dnumdoc']}.txt").write_text(
+        "\n".join([f"{k}={v}" for k, v in qr_debug.items()]) + "\n",
+        encoding="utf-8",
+    )
+
+    rel_signed = resolve_existing_xml_path(str(signed_qr_path))
+    return base_dir, signed_qr_text, rel_signed
+
 def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
     init_db()
     con = get_db()
@@ -5332,40 +5765,18 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
             point_exp=pun,
         )
 
+    base_dir = None
     if not rel_signed:
-        repo_root = _repo_root()
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_dir = _artifacts_root() / f"webui_emit_{invoice_id}_{ts}"
-        base_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            base_dir, signed_qr_text, rel_signed = _create_signed_qr_artifacts(
+                invoice_id=invoice_id,
+                build=build,
+                doc_type=doc_type,
+                run_prefix="webui_emit",
+            )
+        except RuntimeError as exc:
+            abort(400, str(exc))
 
-        in_path = base_dir / f"rde_input_{build['dnumdoc']}.xml"
-        in_path.write_bytes(build["xml_bytes"])
-
-        # firma
-        p12_path = os.getenv("SIFEN_SIGN_P12_PATH") or os.getenv("SIFEN_P12_PATH") or os.getenv("SIFEN_CERT_PATH")
-        p12_password = os.getenv("SIFEN_SIGN_P12_PASSWORD") or os.getenv("SIFEN_P12_PASSWORD") or os.getenv("SIFEN_CERT_PASSWORD")
-        if not p12_path or not p12_password:
-            abort(400, "Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar.")
-
-        signed_bytes = sign_de_with_p12(build["xml_bytes"], p12_path, p12_password)
-        signed_path = base_dir / f"rde_signed_{build['dnumdoc']}.xml"
-        signed_path.write_bytes(signed_bytes)
-
-        # QR
-        csc = (os.getenv("SIFEN_CSC") or "").strip()
-        csc_id = (os.getenv("SIFEN_CSC_ID") or "0001").strip()
-        if not csc:
-            abort(400, "Falta SIFEN_CSC para generar QR.")
-
-        signed_qr_text, qr_debug = _update_qr_in_signed_xml(signed_bytes.decode("utf-8"), csc, csc_id)
-        signed_qr_path = base_dir / f"rde_signed_qr_{build['dnumdoc']}.xml"
-        signed_qr_path.write_text(signed_qr_text, encoding="utf-8")
-        (base_dir / f"qr_debug_{build['dnumdoc']}.txt").write_text(
-            "\n".join([f"{k}={v}" for k, v in qr_debug.items()]) + "\n",
-            encoding="utf-8",
-        )
-
-        rel_signed = resolve_existing_xml_path(str(signed_qr_path))
         con.execute(
             "UPDATE invoices SET issued_at=COALESCE(issued_at,?), source_xml_path=? WHERE id=?",
             (issue_dt.isoformat(timespec="seconds"), rel_signed, invoice_id),
@@ -5447,7 +5858,9 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
     if inv["customer_email"] and (new_status == "CONFIRMED_OK"):
         try:
             issuer = _build_issuer_from_xml_text(signed_qr_text) or _build_issuer_from_template(template_path)
-            pdf_path = base_dir / f"invoice_{invoice_id}.pdf"
+            pdf_base_dir = base_dir or (_artifacts_root() / f"webui_emit_{invoice_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            pdf_base_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = pdf_base_dir / f"invoice_{invoice_id}.pdf"
             payload = _build_pdf_payload(
                 invoice=inv,
                 items_for_pdf=build["items_for_pdf"],
@@ -5515,37 +5928,12 @@ def _generate_signed_xml_for_invoice(
         point_exp=pun,
     )
 
-    p12_path = os.getenv("SIFEN_SIGN_P12_PATH") or os.getenv("SIFEN_P12_PATH") or os.getenv("SIFEN_CERT_PATH")
-    p12_password = os.getenv("SIFEN_SIGN_P12_PASSWORD") or os.getenv("SIFEN_P12_PASSWORD") or os.getenv("SIFEN_CERT_PASSWORD")
-    if not p12_path or not p12_password:
-        raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar.")
-
-    csc = (os.getenv("SIFEN_CSC") or "").strip()
-    csc_id = (os.getenv("SIFEN_CSC_ID") or "0001").strip()
-    if not csc:
-        raise RuntimeError("Falta SIFEN_CSC para generar QR.")
-
-    repo_root = _repo_root()
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_dir = _artifacts_root() / f"webui_sign_{invoice_id}_{ts}"
-    base_dir.mkdir(parents=True, exist_ok=True)
-
-    in_path = base_dir / f"rde_input_{dnumdoc}.xml"
-    in_path.write_bytes(build["xml_bytes"])
-
-    signed_bytes = sign_de_with_p12(build["xml_bytes"], p12_path, p12_password)
-    signed_path = base_dir / f"rde_signed_{dnumdoc}.xml"
-    signed_path.write_bytes(signed_bytes)
-
-    signed_qr_text, qr_debug = _update_qr_in_signed_xml(signed_bytes.decode("utf-8"), csc, csc_id)
-    signed_qr_path = base_dir / f"rde_signed_qr_{dnumdoc}.xml"
-    signed_qr_path.write_text(signed_qr_text, encoding="utf-8")
-    (base_dir / f"qr_debug_{dnumdoc}.txt").write_text(
-        "\n".join([f"{k}={v}" for k, v in qr_debug.items()]) + "\n",
-        encoding="utf-8",
+    _, signed_qr_text, rel_signed = _create_signed_qr_artifacts(
+        invoice_id=invoice_id,
+        build=build,
+        doc_type=doc_type,
+        run_prefix="webui_sign",
     )
-
-    rel_signed = resolve_existing_xml_path(str(signed_qr_path))
     new_status = inv["status"]
     if new_status == "DRAFT":
         new_status = "READY"

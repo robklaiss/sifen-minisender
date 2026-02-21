@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Editor/IDE
+.vscode/
+.idea/
+.windsurf/
+.DS_Store
+
+# Local artifacts / backups
+backups/
+artifacts/
+artifacts/*
+!artifacts/.gitkeep
+webui/data.db
+webui/data.db-shm
+webui/data.db-wal
+data.db
+data/*.db
+data/*.db-shm
+data/*.db-wal
+*.bak*
+.env
+*.p12
+*.pem
+*.key
+secrets/*
+!secrets/README.md
+
+# PROD runtime (no commitear)
+prod/

@@ -1,0 +1,28 @@
+services:
+  web:
+    build:
+      context: .
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    env_file:
+      - .env
+    environment:
+      WEBUI_HOST: 0.0.0.0
+      WEBUI_PORT: 8000
+      SIFEN_WEBUI_DB: ${SIFEN_WEBUI_DB:-/data/webui.db}
+      ARTIFACTS_DIR: ${ARTIFACTS_DIR:-/data/artifacts}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./secrets:/secrets:ro
+      - ./data:/data
+    command: ["webui"]
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/invoices', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s

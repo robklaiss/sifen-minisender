@@ -1,0 +1,8 @@
+services:
+  web:
+    environment:
+      SIFEN_ENV: prod
+
+  cli:
+    environment:
+      SIFEN_ENV: prod

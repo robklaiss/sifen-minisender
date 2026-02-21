@@ -37,6 +37,7 @@ from app.sifen_client.xmlsec_signer import sign_de_with_p12, sign_event_with_p12
 from app.sifen_client.config import get_sifen_config
 from app.sifen_client.soap_client import SoapClient
 from app.sifen_client.cdc_utils import calc_dv_mod11
+from app.sifen_client.xsd_validator import validate_de_xml_against_xsd
 from sifen_minisender.core_send import send_lote_from_xml
 
 APP_TITLE = "SIFEN WebUI (SQLite)"
@@ -5398,6 +5399,34 @@ def api_invoice_dry_run(invoice_id: int):
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
+    schemas_dir = _repo_root() / "schemas_sifen"
+    signed_qr_path = Path(rel_signed)
+    if not signed_qr_path.is_absolute():
+        signed_qr_path = (_repo_root() / signed_qr_path).resolve()
+    try:
+        signed_qr_text = signed_qr_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"No se pudo leer XML firmado con QR: {exc}"}), 400
+
+    xsd_ok, xsd_errors = validate_de_xml_against_xsd(signed_qr_text, schemas_dir=schemas_dir)
+    if not xsd_ok:
+        xsd_error_lines = [str(x).strip() for x in (xsd_errors or []) if str(x).strip()]
+        if not xsd_error_lines:
+            xsd_error_lines = ["Validación XSD falló sin detalle."]
+        (base_dir / "xsd_errors.txt").write_text("\n".join(xsd_error_lines) + "\n", encoding="utf-8")
+        return jsonify(
+            {
+                "ok": False,
+                "error": "XSD validation failed",
+                "details": xsd_error_lines,
+                "artifacts_dir": str(base_dir),
+                "invoice_id": invoice_id,
+                "doc_type": doc_type,
+                "dnumdoc": build.get("dnumdoc"),
+                "cdc": build.get("cdc"),
+            }
+        ), 400
+
     if persist_source_xml:
         con.execute(
             "UPDATE invoices SET issued_at=COALESCE(issued_at,?), source_xml_path=? WHERE id=?",
@@ -5419,6 +5448,7 @@ def api_invoice_dry_run(invoice_id: int):
             "artifact_links": _artifact_links_for_dir(str(base_dir)),
             "cdc": build.get("cdc"),
             "dnumdoc": build.get("dnumdoc"),
+            "xsd_ok": True,
         }
     )
 

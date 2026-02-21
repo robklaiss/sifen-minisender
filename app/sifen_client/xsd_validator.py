@@ -5,6 +5,7 @@ Valida rDE y rLoteDE contra esquemas XSD locales, resolviendo includes/imports
 desde el directorio local en lugar de URLs remotas.
 """
 import os
+import re
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 
@@ -72,6 +73,7 @@ def _parser_with_resolver(xsd_dir: Path) -> etree.XMLParser:
     """
     parser = etree.XMLParser(
         remove_blank_text=False,
+        load_dtd=False,
         resolve_entities=False,
         no_network=True,
         huge_tree=True
@@ -102,6 +104,153 @@ def load_schema(main_xsd: Path, xsd_dir: Path) -> etree.XMLSchema:
     parser = _parser_with_resolver(xsd_dir)
     doc = etree.parse(str(main_xsd), parser)
     return etree.XMLSchema(doc)
+
+
+def _localname(tag: str) -> str:
+    """Devuelve localname de un tag QName."""
+    if "}" in tag:
+        return tag.rsplit("}", 1)[-1]
+    return tag
+
+
+def _xsd_declares_global_element(xsd_path: Path, element_name: str) -> bool:
+    """
+    Verifica si un XSD declara un elemento global con nombre exacto.
+    Soporta prefijos xs: o xsd:.
+    """
+    try:
+        text = xsd_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+    pattern = re.compile(
+        rf"<\s*(?:xs|xsd):element\b[^>]*\bname\s*=\s*\"{re.escape(element_name)}\"",
+        re.IGNORECASE,
+    )
+    return bool(pattern.search(text))
+
+
+def _score_main_xsd_candidate(xsd_path: Path, expected_root: str) -> tuple[int, str]:
+    """
+    Scoring determinista para elegir XSD principal.
+    Prioriza documentos DE v150 y, para rDE, evita variantes problemáticas.
+    """
+    name = xsd_path.name.lower()
+    score = 0
+
+    if "de" in name:
+        score += 20
+    if "150" in name:
+        score += 30
+    if expected_root.lower() in name:
+        score += 15
+
+    if expected_root == "rDE":
+        if name == "sirecepde_v150.xsd":
+            score += 120
+        elif name.startswith("sirecepde"):
+            score += 80
+        elif name == "de_v150.xsd":
+            score += 50
+        if "sireceprde" in name:
+            # En algunos bundles esta variante apunta includes no disponibles.
+            score -= 30
+    elif expected_root == "DE":
+        if name == "de_v150.xsd":
+            score += 120
+        elif name.startswith("de_"):
+            score += 60
+
+    # preferencia explícita a nombres que contengan DE + 150
+    if "de" in name and "150" in name:
+        score += 25
+
+    return score, name
+
+
+def _select_main_de_xsd_for_xml(xml_text: str, schemas_dir: Path) -> Path:
+    """
+    Selecciona el XSD raíz más probable para validar el XML de DE.
+    - Busca candidatos en schemas_sifen/.
+    - Prefiere nombres con DE + 150.
+    - Verifica carga real de includes/imports antes de elegir.
+    """
+    schemas_dir = Path(schemas_dir).resolve()
+    if not schemas_dir.exists():
+        raise RuntimeError(f"Directorio de esquemas no encontrado: {schemas_dir}")
+
+    parser = _parser_with_resolver(schemas_dir)
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"), parser=parser)
+    except etree.XMLSyntaxError as exc:
+        raise RuntimeError(f"XML inválido para selección de XSD: {exc}") from exc
+
+    root_name = _localname(root.tag)
+    expected_root = root_name
+    if expected_root not in ("rDE", "DE"):
+        if root.xpath(".//*[local-name()='rDE']"):
+            expected_root = "rDE"
+        elif root.xpath(".//*[local-name()='DE']"):
+            expected_root = "DE"
+        else:
+            raise RuntimeError(
+                f"No se encontró root DE/rDE en el XML (root actual: {root_name})."
+            )
+
+    xsd_files = list(schemas_dir.glob("*.xsd"))
+    if not xsd_files:
+        raise RuntimeError(f"No hay archivos XSD en {schemas_dir}")
+
+    candidates = [p for p in xsd_files if _xsd_declares_global_element(p, expected_root)]
+    if not candidates:
+        raise RuntimeError(
+            f"No se encontró XSD que declare elemento global '{expected_root}' en {schemas_dir}. "
+            "Faltan XSD en schemas_sifen/."
+        )
+
+    ranked = sorted(
+        candidates,
+        key=lambda p: _score_main_xsd_candidate(p, expected_root),
+        reverse=True,
+    )
+
+    load_errors = []
+    for candidate in ranked:
+        try:
+            load_schema(candidate, schemas_dir)
+            return candidate
+        except Exception as exc:
+            load_errors.append(f"{candidate.name}: {exc}")
+
+    details = "; ".join(load_errors[:3])
+    raise RuntimeError(
+        f"No se pudo cargar un XSD raíz válido para '{expected_root}' desde {schemas_dir}. "
+        f"Candidatos probados: {details}"
+    )
+
+
+def validate_de_xml_against_xsd(xml_text: str, *, schemas_dir: Path) -> tuple[bool, list[str]]:
+    """
+    Valida un DE firmado (por ejemplo rde_signed_qr_*.xml) contra XSD v150 locales.
+    """
+    if not xml_text or not xml_text.strip():
+        return False, ["XML vacío."]
+
+    schemas_dir = Path(schemas_dir).resolve()
+    if not schemas_dir.exists():
+        return False, [f"Directorio de esquemas no encontrado: {schemas_dir}"]
+
+    try:
+        main_xsd = _select_main_de_xsd_for_xml(xml_text, schemas_dir)
+    except Exception as exc:
+        return False, [str(exc)]
+
+    try:
+        schema = load_schema(main_xsd, schemas_dir)
+    except Exception as exc:
+        return False, [f"No se pudo cargar XSD principal {main_xsd.name}: {exc}"]
+
+    ok, errors = validate_xml_bytes(xml_text.encode("utf-8"), schema, schemas_dir)
+    return ok, errors
 
 
 def validate_xml_bytes(
@@ -410,4 +559,3 @@ def validate_rde_and_lote(
             print(f"   LOTE_SCHEMA=NONE")
     
     return result
-

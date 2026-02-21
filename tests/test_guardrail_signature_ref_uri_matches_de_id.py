@@ -8,24 +8,13 @@ def _localname(tag: str) -> str:
     return tag.split("}", 1)[1] if isinstance(tag, str) and "}" in tag else tag
 
 
-def _pick_latest_last_lote() -> Path:
-    artifacts_dir = Path(__file__).resolve().parents[1] / "artifacts"
-    direct = artifacts_dir / "last_lote.xml"
-    if direct.exists() and direct.is_file():
-        return direct
-
-    cands = sorted(
-        artifacts_dir.glob("run_*/last_lote.xml"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if cands:
-        return cands[0]
-    pytest.fail("Ejecutá send_sirecepde para generar artifacts")
-
+def _pick_latest_rde_xml() -> Path:
+    from pathlib import Path
+    from tests._rde_artifact import pick_latest_rde_signed_qr
+    return pick_latest_rde_signed_qr(Path(__file__).resolve().parents[1])
 
 def _load_rde() -> ET.Element:
-    lote_path = _pick_latest_last_lote()
+    lote_path = _pick_latest_rde_xml()
     root = ET.parse(lote_path).getroot()
     if _localname(root.tag) == "rDE":
         return root

@@ -1,3 +1,27 @@
+# 🚨 INVARIANTES CRÍTICOS (NO ROMPER)
+
+Estas reglas son obligatorias. Si se toca algo relacionado, SIEMPRE correr smoke tests.
+
+1. Orden XSD SIEMPRE se respeta.
+   - Todo `xs:sequence` implica orden obligatorio.
+   - Si se usa `_ensure_child_ns()`, luego evaluar reordenamiento manual.
+
+2. Nunca modificar `gTotSub` sin validar contra `DE_v150.xsd (tgTotSub)`.
+
+3. Siempre correr antes de commit:
+   - POST /api/invoices/{id}/dry-run
+   - Verificar: HTTP 200 + xsd_ok=true
+
+4. Nunca tocar generación de CDC sin:
+   - Comparar longitud exacta.
+   - Validar DV.
+   - Confirmar QR consistente.
+
+5. Si algo rompe XSD:
+   - Revisar ORDEN antes de revisar valores.
+
+---
+
 # Anti-regresión (SIFEN Minisender)
 
 Este archivo registra “guardrails” (aprendizajes) para evitar romper cosas que ya funcionaban.

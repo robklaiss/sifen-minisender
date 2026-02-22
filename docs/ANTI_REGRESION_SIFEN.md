@@ -89,3 +89,12 @@ COMANDO:
 - Qué NO tocar / invariantes.
 - Si se vuelve a tocar: qué test correr SIEMPRE.
 
+
+---
+
+## Operativa
+
+6. Antes de cualquier deploy:
+   - Ejecutar: `./scripts/full_check.sh 5`
+   - No desplegar si falla.
+

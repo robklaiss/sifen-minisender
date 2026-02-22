@@ -1776,6 +1776,47 @@ def _build_invoice_xml_from_template(
             if dtotal is not None:
                 gtot.remove(dtotal)
 
+            # Asegurar orden XSD en gTotSub (DE_v150.xsd tgTotSub)
+            # Nota: _ensure_child_ns() agrega al final si falta el tag, y el template puede traer dTBasGraIVA,
+            # por eso debemos reordenar para evitar que dBaseGrav* quede después de dTBasGraIVA.
+            try:
+                def _loc(t):
+                    return t.split("}", 1)[1] if "}" in t else t
+
+                xsd_order = [
+                    "dSubExe","dSubExo","dSub5","dSub10",
+                    "dTotOpe","dTotDesc","dTotDescGlotem","dTotAntItem","dTotAnt",
+                    "dPorcDescTotal","dDescTotal","dAnticipo","dRedon","dComi",
+                    "dTotGralOpe","dIVA5","dIVA10","dLiqTotIVA5","dLiqTotIVA10","dIVAComi","dTotIVA",
+                    "dBaseGrav5","dBaseGrav10","dTBasGraIVA","dTotalGs",
+                ]
+
+                kids = list(gtot)
+                by_name = {}
+                rest = []
+                for k in kids:
+                    name = _loc(getattr(k, "tag", ""))
+                    if name in xsd_order and name not in by_name:
+                        by_name[name] = k
+                    else:
+                        rest.append(k)
+
+                # Limpiar y reinsertar en orden
+                for k in kids:
+                    try:
+                        gtot.remove(k)
+                    except Exception:
+                        pass
+
+                for name in xsd_order:
+                    k = by_name.get(name)
+                    if k is not None:
+                        gtot.append(k)
+                for k in rest:
+                    gtot.append(k)
+            except Exception:
+                pass
+
             if doc_type == "4":
                 # Autofactura: remover campos no permitidos según doc
                 for tag in [

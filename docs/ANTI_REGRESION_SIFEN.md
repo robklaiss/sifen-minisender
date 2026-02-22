@@ -28,3 +28,40 @@ Reglas de oro:
 **Smoke test**
 - `POST /api/invoices/5/dry-run` → `HTTP 200`, `ok=true`, `xsd_ok=true`
 - Artifacts: `/data/artifacts/webui_dryrun_5_20260222_201545`
+
+---
+
+## Plantilla (copiar/pegar para un nuevo guardrail)
+
+## Guardrail YYYY-MM-DD — Título corto (componente / norma / endpoint)
+
+**ID**
+- GR-YYYYMMDD-XX
+
+**Síntoma**
+- Qué falló (endpoint/comando) + mensaje exacto (1–3 líneas).
+
+**Impacto**
+- Ambiente: DEV | TEST | PROD
+- Severidad: Baja | Media | Alta | Bloqueante
+
+**Causa real**
+- Qué lo provocó (archivo/función/orden XSD/etc.) y por qué.
+
+**Fix aplicado**
+- Qué se cambió (archivo/s) y enfoque.
+- Commit: _____ — mensaje
+
+**Smoke test (copy/paste)**
+
+COMANDO:
+    # comando exacto que valida que volvió a funcionar
+
+**Evidencia / artifacts**
+- Ruta(s): _____
+- Logs clave: _____
+
+**Anti-regresión**
+- Qué NO tocar / invariantes.
+- Si se vuelve a tocar: qué test correr SIEMPRE.
+

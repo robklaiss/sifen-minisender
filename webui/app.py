@@ -12,6 +12,7 @@ import time
 import sys
 import random
 import zipfile
+import unicodedata
 from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
 from datetime import datetime, date
@@ -37,9 +38,11 @@ from app.sifen_client.xmlsec_signer import sign_de_with_p12, sign_event_with_p12
 from app.sifen_client.config import get_sifen_config
 from app.sifen_client.soap_client import SoapClient
 from app.sifen_client.cdc_utils import calc_dv_mod11
+from app.sifen_client.utils import sifen_timestamp
 from sifen_minisender.core_send import send_lote_from_xml
 
 APP_TITLE = "SIFEN WebUI (SQLite)"
+_SIFEN_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
 
 
 def _resolve_db_path() -> str:
@@ -170,6 +173,52 @@ VEH_TIPO_MAP = {
     "2": "Camioneta",
     "3": "Furgon",
     "4": "Otro",
+}
+
+DEP_DESC_BY_CODE = {
+    "1": "CAPITAL",
+    "2": "CONCEPCION",
+    "3": "SAN PEDRO",
+    "4": "CORDILLERA",
+    "5": "GUAIRA",
+    "6": "CAAGUAZU",
+    "7": "CAAZAPA",
+    "8": "ITAPUA",
+    "9": "MISIONES",
+    "10": "PARAGUARI",
+    "11": "ALTO PARANA",
+    "12": "CENTRAL",
+    "13": "NEEMBUCU",
+    "14": "AMAMBAY",
+    "15": "PTE. HAYES",
+    "16": "BOQUERON",
+    "17": "ALTO PARAGUAY",
+    "18": "CANINDEYU",
+    "19": "CHACO",
+    "20": "NUEVA ASUNCION",
+}
+DEP_DESC_KEY_MAP = {
+    "CAPITAL": "CAPITAL",
+    "CONCEPCION": "CONCEPCION",
+    "SAN PEDRO": "SAN PEDRO",
+    "CORDILLERA": "CORDILLERA",
+    "GUAIRA": "GUAIRA",
+    "CAAGUAZU": "CAAGUAZU",
+    "CAAZAPA": "CAAZAPA",
+    "ITAPUA": "ITAPUA",
+    "MISIONES": "MISIONES",
+    "PARAGUARI": "PARAGUARI",
+    "ALTO PARANA": "ALTO PARANA",
+    "CENTRAL": "CENTRAL",
+    "NEEMBUCU": "NEEMBUCU",
+    "AMAMBAY": "AMAMBAY",
+    "PTE HAYES": "PTE. HAYES",
+    "PTE. HAYES": "PTE. HAYES",
+    "BOQUERON": "BOQUERON",
+    "ALTO PARAGUAY": "ALTO PARAGUAY",
+    "CANINDEYU": "CANINDEYU",
+    "CHACO": "CHACO",
+    "NUEVA ASUNCION": "NUEVA ASUNCION",
 }
 
 _GEOREF_CACHE = None
@@ -365,10 +414,10 @@ def _ensure_signed_at(con: sqlite3.Connection, inv: sqlite3.Row, invoice_id: int
 
     dt = _parse_iso_dt(signed_at) or _parse_iso_dt(issued_at)
     if not dt:
-        signed_at = now_iso()
+        signed_at = sifen_timestamp()
         dt = _parse_iso_dt(signed_at)
     if not signed_at:
-        signed_at = dt.isoformat(timespec="seconds")
+        signed_at = sifen_timestamp(dt)
     if not (inv["signed_at"] or "").strip():
         con.execute("UPDATE invoices SET signed_at=? WHERE id=?", (signed_at, invoice_id))
         con.commit()
@@ -401,6 +450,87 @@ def _extract_signed_xml_meta(xml_text: str) -> dict:
         "tot_iva": _extract_tag(xml_text, "dTotIVA"),
     }
 
+def _resolve_xsd_dir() -> Path:
+    raw = (os.getenv("SIFEN_XSD_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return _repo_root() / "schemas_sifen"
+
+def _write_xsd_errors(artifacts_dir: Path, header: str, result: dict, xsd_dir: Path) -> None:
+    lines = [header, f"xsd_dir={xsd_dir}"]
+    if result.get("schema_rde"):
+        lines.append(f"schema_rde={result['schema_rde']}")
+    if result.get("rde_version"):
+        lines.append(f"rde_version={result['rde_version']}")
+    if result.get("schema_reason"):
+        lines.append(f"schema_reason={result['schema_reason']}")
+    if result.get("schema_lote"):
+        lines.append(f"schema_lote={result['schema_lote']}")
+    if result.get("rde_errors"):
+        lines.append("rde_errors:")
+        for err in result["rde_errors"]:
+            lines.append(f"- {err}")
+    if result.get("lote_errors"):
+        lines.append("lote_errors:")
+        for err in result["lote_errors"]:
+            lines.append(f"- {err}")
+    artifacts_dir.joinpath("xsd_errors.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+def _write_timestamp_errors(artifacts_dir: Path, header: str, lines: list[str]) -> None:
+    artifacts_dir.joinpath("timestamp_errors.txt").write_text("\n".join([header, *lines]) + "\n", encoding="utf-8")
+
+def _ensure_sifen_ts(ts: str, context: str) -> str:
+    if not _SIFEN_TS_RE.fullmatch(ts):
+        raise RuntimeError(f"{context}: timestamp SIFEN inválido: {ts!r}")
+    return ts
+
+def _validate_xml_timestamps_or_raise(xml_bytes: bytes, artifacts_dir: Path, label: str) -> None:
+    xml_text = xml_bytes.decode("utf-8", errors="ignore")
+    errors: list[str] = []
+    context_lines: list[str] = []
+    for tag in ("dFecFirma", "dFeEmiDE"):
+        values = re.findall(rf"<{tag}>(.*?)</{tag}>", xml_text)
+        if not values:
+            errors.append(f"{tag}: <missing>")
+        else:
+            for value in values:
+                if not _SIFEN_TS_RE.fullmatch(value):
+                    errors.append(f"{tag}: {value!r}")
+        m = re.search(rf"<{tag}>(.*?)</{tag}>", xml_text, flags=re.S)
+        if m:
+            snippet = xml_text[max(0, m.start() - 80):m.end() + 80]
+            snippet = snippet.replace("\r", " ").replace("\n", " ")
+            context_lines.append(f"context {tag}: {snippet}")
+        else:
+            context_lines.append(f"context {tag}: <missing>")
+
+    if errors:
+        _write_timestamp_errors(
+            artifacts_dir,
+            f"{label}: timestamps inválidos",
+            errors + context_lines,
+        )
+        raise RuntimeError("Timestamps inválidos en XML (ver timestamp_errors.txt).")
+
+def _validate_rde_xsd_or_raise(xml_bytes: bytes, artifacts_dir: Path, label: str) -> None:
+    from app.sifen_client.xsd_validator import validate_rde_and_lote
+
+    xsd_dir = _resolve_xsd_dir()
+    if not xsd_dir.exists():
+        msg = f"Directorio XSD no existe: {xsd_dir}"
+        _write_xsd_errors(artifacts_dir, f"{label}: {msg}", {"rde_errors": [msg]}, xsd_dir)
+        raise RuntimeError(msg)
+
+    result = validate_rde_and_lote(rde_signed_bytes=xml_bytes, lote_xml_bytes=None, xsd_dir=xsd_dir)
+    if not result.get("rde_ok"):
+        _write_xsd_errors(
+            artifacts_dir,
+            f"{label}: Validación XSD falló",
+            result,
+            xsd_dir,
+        )
+        raise RuntimeError("Validación XSD falló. Revisar xsd_errors.txt.")
+
 def _backfill_doc_info_from_xml(con: sqlite3.Connection, inv: sqlite3.Row, invoice_id: int, xml_text: str) -> dict:
     meta = _extract_signed_xml_meta(xml_text)
     doc_number = (inv["doc_number"] or "").strip() if "doc_number" in inv.keys() else ""
@@ -410,7 +540,11 @@ def _backfill_doc_info_from_xml(con: sqlite3.Connection, inv: sqlite3.Row, invoi
         con.execute("UPDATE invoices SET doc_number=? WHERE id=?", (meta["dnumdoc"], invoice_id))
         con.commit()
     if not signed_at and meta.get("feemi"):
-        con.execute("UPDATE invoices SET signed_at=? WHERE id=?", (meta["feemi"], invoice_id))
+        try:
+            feemi = sifen_timestamp(meta["feemi"])
+        except Exception:
+            feemi = meta["feemi"]
+        con.execute("UPDATE invoices SET signed_at=? WHERE id=?", (feemi, invoice_id))
         con.commit()
     return meta
 
@@ -625,6 +759,42 @@ def _geo_name(kind: str, code: Optional[str]) -> str:
         code_str = code_str.lstrip("0") or code_str
     maps = _load_georef_maps()
     return (maps.get(kind, {}) or {}).get(code_str, "")
+
+
+def _normalize_key_text(value: str) -> str:
+    base = unicodedata.normalize("NFKD", value or "")
+    base = "".join(ch for ch in base if not unicodedata.combining(ch))
+    base = re.sub(r"\s+", " ", base).strip().upper()
+    return base
+
+
+def _dep_desc_from_code(dep_code: Optional[str]) -> str:
+    digits = re.sub(r"\D", "", str(dep_code or ""))
+    if not digits:
+        return ""
+    try:
+        code = str(int(digits))
+    except Exception:
+        return ""
+    return DEP_DESC_BY_CODE.get(code, "")
+
+
+def _normalize_dep_desc(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    key = _normalize_key_text(str(value).replace(".", " "))
+    return DEP_DESC_KEY_MAP.get(key, "")
+
+
+def _city_desc_from_code(city_code: Optional[str]) -> str:
+    digits = re.sub(r"\D", "", str(city_code or ""))
+    if not digits:
+        return ""
+    try:
+        code = str(int(digits))
+    except Exception:
+        return ""
+    return (_geo_name("city", code) or "").strip()
 
 def _validate_doc_extra(doc_type: str, extra_json: dict) -> list:
     errors = []
@@ -873,7 +1043,7 @@ def _build_cancel_event_xml(cdc: str, motivo: str, event_id: str) -> bytes:
     rEve = ET.SubElement(rGesEve, f"{{{ns_uri}}}rEve")
     rEve.set("Id", event_id)
     dFecFirma = ET.SubElement(rEve, f"{{{ns_uri}}}dFecFirma")
-    dFecFirma.text = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    dFecFirma.text = sifen_timestamp()
     dVerFor = ET.SubElement(rEve, f"{{{ns_uri}}}dVerFor")
     dVerFor.text = "150"
     dTiGDE = ET.SubElement(rEve, f"{{{ns_uri}}}dTiGDE")
@@ -904,7 +1074,7 @@ def _build_inutil_event_xml(
     rEve = ET.SubElement(rGesEve, f"{{{ns_uri}}}rEve")
     rEve.set("Id", event_id)
     dFecFirma = ET.SubElement(rEve, f"{{{ns_uri}}}dFecFirma")
-    dFecFirma.text = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    dFecFirma.text = sifen_timestamp()
     dVerFor = ET.SubElement(rEve, f"{{{ns_uri}}}dVerFor")
     dVerFor.text = "150"
     dTiGDE = ET.SubElement(rEve, f"{{{ns_uri}}}dTiGDE")
@@ -1081,7 +1251,17 @@ def _fill_geo_desc_in(parent: Optional[ET.Element], code_tag: str, desc_tag: str
         return
     name = _geo_name(kind, code_el.text or "")
     if name:
-        _ensure_child_ns(parent, desc_tag, ns_uri).text = name
+        if desc_el is None:
+            desc_el = ET.Element(f"{{{ns_uri}}}{desc_tag}")
+        desc_el.text = name
+        children = list(parent)
+        code_idx = children.index(code_el)
+        if desc_el in children:
+            if children.index(desc_el) != code_idx + 1:
+                parent.remove(desc_el)
+                parent.insert(code_idx + 1, desc_el)
+        else:
+            parent.insert(code_idx + 1, desc_el)
 
 def _build_invoice_xml_from_template(
     *,
@@ -1135,11 +1315,18 @@ def _build_invoice_xml_from_template(
     _update_text(root, ".//s:gTimb/s:iTiDE", doc_type, ns)
     _update_text(root, ".//s:gTimb/s:dDesTiDE", doc_type_label(doc_type), ns)
 
-    now = issue_dt or datetime.now()
-    iso = now.strftime("%Y-%m-%dT%H:%M:%S")
+    iso = _ensure_sifen_ts(sifen_timestamp(issue_dt), "build_invoice_xml")
+    now = datetime.fromisoformat(iso)
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)
     _update_text(root, ".//s:dFecFirma", iso, ns)
 
+    extra_json = extra_json or {}
+    if codseg is None:
+        codseg = (
+            (extra_json.get("ope") or {}).get("codseg")
+            or extra_json.get("codseg")
+            or extra_json.get("dCodSeg")
+        )
     codseg_digits = re.sub(r"\D", "", str(codseg or "").strip())
     if not re.fullmatch(r"\d{9}", codseg_digits):
         raise RuntimeError("codseg requerido y debe tener exactamente 9 dígitos.")
@@ -1173,15 +1360,13 @@ def _build_invoice_xml_from_template(
     if cust_dv:
         _update_text(root, ".//s:gDatRec/s:dDVRec", cust_dv, ns)
 
-    extra_json = extra_json or {}
-
     # Ajustes por tipo de documento
     gdtip = root.find(".//s:gDtipDE", ns)
     if gdtip is None:
         raise RuntimeError("No se encontró <gDtipDE> en el XML base.")
     if doc_type != "1":
         _remove_child_ns(gdtip, "gCamFE", ns_uri)
-    if doc_type not in ("1", "4"):
+    if doc_type not in ("1", "4", "7"):
         _remove_child_ns(gdtip, "gCamCond", ns_uri)
 
     # dInfoFisc obligatorio para Remisión
@@ -1309,171 +1494,11 @@ def _build_invoice_xml_from_template(
         _fill_geo_desc_in(g_ae, "cDisProv", "dDesDisProv", "dist", ns_uri)
         _fill_geo_desc_in(g_ae, "cCiuProv", "dDesCiuProv", "city", ns_uri)
 
-    # gTransp (Transporte)
-    if doc_type in ("4", "5", "6"):
-        _remove_child_ns(gdtip, "gTransp", ns_uri)
-    else:
-        transporte = extra_json.get("transporte")
-        if transporte and isinstance(transporte, list):
-            transporte = transporte[0] if transporte else None
-        if doc_type == "7" and not transporte:
-            raise RuntimeError("doc_extra_json.transporte requerido para Remisión (iTiDE=7).")
-        if transporte:
-            gtransp = _ensure_child_ns(gdtip, "gTransp", ns_uri)
-            tip_trans = str(transporte.get("iTipTrans") or transporte.get("tipoTransporte") or "").strip()
-            if tip_trans:
-                _ensure_child_ns(gtransp, "iTipTrans", ns_uri).text = tip_trans
-                _ensure_child_ns(gtransp, "dDesTipTrans", ns_uri).text = TRANS_TIPO_MAP.get(tip_trans, "Tercero")
-
-            mod_trans = str(transporte.get("iModTrans") or transporte.get("modalidad") or "1").strip()
-            if mod_trans:
-                _ensure_child_ns(gtransp, "iModTrans", ns_uri).text = mod_trans
-                _ensure_child_ns(gtransp, "dDesModTrans", ns_uri).text = TRANS_MOD_MAP.get(mod_trans, "Terrestre")
-
-            resp_flete = str(transporte.get("iRespFlete") or transporte.get("tipoResponsable") or "").strip()
-            if resp_flete:
-                _ensure_child_ns(gtransp, "iRespFlete", ns_uri).text = resp_flete
-
-            ini = transporte.get("iniFechaEstimadaTrans") or transporte.get("dIniTras")
-            fin = transporte.get("finFechaEstimadaTrans") or transporte.get("dFinTras")
-            if ini:
-                _ensure_child_ns(gtransp, "dIniTras", ns_uri).text = str(ini).split(" ")[0]
-            if fin:
-                _ensure_child_ns(gtransp, "dFinTras", ns_uri).text = str(fin).split(" ")[0]
-
-            def _set_loc(loc: dict, tag: str) -> None:
-                if not loc:
-                    return
-                g = _ensure_child_ns(gtransp, tag, ns_uri)
-                if tag == "gCamSal":
-                    ddir = "dDirLocSal"
-                    dnum = "dNumCasSal"
-                    dcomp1 = "dComp1Sal"
-                    dcomp2 = "dComp2Sal"
-                    cdep = "cDepSal"
-                    ddep = "dDesDepSal"
-                    cdis = "cDisSal"
-                    ddis = "dDesDisSal"
-                    cciu = "cCiuSal"
-                    dciu = "dDesCiuSal"
-                    dtel = "dTelSal"
-                else:
-                    ddir = "dDirLocEnt"
-                    dnum = "dNumCasEnt"
-                    dcomp1 = "dComp1Ent"
-                    dcomp2 = "dComp2Ent"
-                    cdep = "cDepEnt"
-                    ddep = "dDesDepEnt"
-                    cdis = "cDisEnt"
-                    ddis = "dDesDisEnt"
-                    cciu = "cCiuEnt"
-                    dciu = "dDesCiuEnt"
-                    dtel = "dTelEnt"
-
-                _ensure_child_ns(g, ddir, ns_uri).text = str(loc.get("direccion") or loc.get("dir") or "S/D")
-                _ensure_child_ns(g, dnum, ns_uri).text = str(loc.get("numCasa") or loc.get("numero") or "0")
-                comp1 = loc.get("comp1") or loc.get("complemento1")
-                comp2 = loc.get("comp2") or loc.get("complemento2")
-                if comp1:
-                    _ensure_child_ns(g, dcomp1, ns_uri).text = str(comp1)
-                if comp2:
-                    _ensure_child_ns(g, dcomp2, ns_uri).text = str(comp2)
-
-                dep = loc.get("departamento")
-                dep_code = _zfill_digits(dep, 2) if dep is not None else ""
-                if dep_code:
-                    _ensure_child_ns(g, cdep, ns_uri).text = dep_code
-                    dep_desc = loc.get("departamentoDesc") or _geo_name("dep", dep_code)
-                    if dep_desc:
-                        _ensure_child_ns(g, ddep, ns_uri).text = dep_desc
-
-                dis = loc.get("distrito")
-                dis_code = _zfill_digits(dis, 4) if dis is not None else ""
-                if dis_code:
-                    _ensure_child_ns(g, cdis, ns_uri).text = dis_code
-                    dis_desc = loc.get("distritoDesc") or _geo_name("dist", dis_code)
-                    if dis_desc:
-                        _ensure_child_ns(g, ddis, ns_uri).text = dis_desc
-
-                ciu = loc.get("ciudad")
-                ciu_code = _zfill_digits(ciu, 5) if ciu is not None else ""
-                if ciu_code:
-                    _ensure_child_ns(g, cciu, ns_uri).text = ciu_code
-                    ciu_desc = loc.get("ciudadDesc") or _geo_name("city", ciu_code)
-                    if ciu_desc:
-                        _ensure_child_ns(g, dciu, ns_uri).text = ciu_desc
-
-                tel = loc.get("telefono")
-                if tel:
-                    _ensure_child_ns(g, dtel, ns_uri).text = str(tel)
-
-            _set_loc(transporte.get("salida") or {}, "gCamSal")
-            _set_loc(transporte.get("entrega") or {}, "gCamEnt")
-
-            veh = transporte.get("vehiculo") or {}
-            if veh:
-                gveh = _ensure_child_ns(gtransp, "gVehTras", ns_uri)
-                vtipo = str(veh.get("tipo") or veh.get("dTiVehTras") or "").strip()
-                if vtipo:
-                    _ensure_child_ns(gveh, "dTiVehTras", ns_uri).text = VEH_TIPO_MAP.get(vtipo, vtipo)
-                marca = veh.get("marca") or veh.get("dMarVeh")
-                if marca:
-                    _ensure_child_ns(gveh, "dMarVeh", ns_uri).text = str(marca)
-
-                tip_id = str(veh.get("documentoTipo") or veh.get("dTipIdenVeh") or "1").strip()
-                _ensure_child_ns(gveh, "dTipIdenVeh", ns_uri).text = tip_id
-                nro = veh.get("numeroIden") or veh.get("dNroIDVeh") or veh.get("numeroMat") or veh.get("dNroMatVeh")
-                if tip_id == "1" and nro:
-                    _ensure_child_ns(gveh, "dNroIDVeh", ns_uri).text = str(nro)
-                elif tip_id == "2" and nro:
-                    _ensure_child_ns(gveh, "dNroMatVeh", ns_uri).text = str(nro)
-
-                nro_vuelo = veh.get("numeroVuelo") or veh.get("dNroVuelo")
-                if mod_trans == "3" and nro_vuelo:
-                    _ensure_child_ns(gveh, "dNroVuelo", ns_uri).text = str(nro_vuelo)
-
-            trans = transporte.get("transportista") or {}
-            if trans or doc_type == "7":
-                gcam = _ensure_child_ns(gtransp, "gCamTrans", ns_uri)
-                nat = str(trans.get("tipo") or trans.get("iNatTrans") or "1").strip()
-                if nat not in ("1", "2"):
-                    nat = "1"
-                _ensure_child_ns(gcam, "iNatTrans", ns_uri).text = nat
-                _ensure_child_ns(gcam, "dNomTrans", ns_uri).text = str(trans.get("nombreTr") or trans.get("nombre") or "Transportista")
-
-                if nat == "1":
-                    ruc_raw = str(trans.get("numeroTr") or trans.get("ruc") or "").strip()
-                    ruc, dv = _split_ruc_dv(ruc_raw)
-                    if not dv and ruc:
-                        try:
-                            dv = str(calc_dv_mod11(ruc))
-                        except Exception:
-                            dv = ""
-                    if ruc:
-                        _ensure_child_ns(gcam, "dRucTrans", ns_uri).text = ruc
-                    if dv:
-                        _ensure_child_ns(gcam, "dDVTrans", ns_uri).text = dv
-                else:
-                    tip_id = str(trans.get("tipoDocumentoTr") or trans.get("iTipIDTrans") or "1").strip()
-                    if tip_id not in AFE_ID_MAP:
-                        tip_id = "1"
-                    _ensure_child_ns(gcam, "iTipIDTrans", ns_uri).text = tip_id
-                    _ensure_child_ns(gcam, "dDTipIDTrans", ns_uri).text = AFE_ID_MAP.get(tip_id, "Cédula paraguaya")
-                    num_id = trans.get("numeroTr") or trans.get("dNumIDTrans")
-                    if num_id:
-                        _ensure_child_ns(gcam, "dNumIDTrans", ns_uri).text = str(num_id)
-
-                num_ch = trans.get("numeroCh") or trans.get("dNumIDChof") or "0"
-                nom_ch = trans.get("nombreCh") or trans.get("dNomChof") or "Chofer"
-                _ensure_child_ns(gcam, "dNumIDChof", ns_uri).text = str(num_ch)
-                _ensure_child_ns(gcam, "dNomChof", ns_uri).text = str(nom_ch)
-
-                dom_fisc = trans.get("direccionTr") or trans.get("dDomFisc")
-                if dom_fisc:
-                    _ensure_child_ns(gcam, "dDomFisc", ns_uri).text = str(dom_fisc)
-                dir_ch = trans.get("direccionCh") or trans.get("dDirChof")
-                if dir_ch:
-                    _ensure_child_ns(gcam, "dDirChof", ns_uri).text = str(dir_ch)
+    transporte = extra_json.get("transporte")
+    if transporte and isinstance(transporte, list):
+        transporte = transporte[0] if transporte else None
+    if doc_type == "7" and not transporte:
+        raise RuntimeError("doc_extra_json.transporte requerido para Remisión (iTiDE=7).")
 
     # Items
     existing_items = gdtip.findall("s:gCamItem", ns)
@@ -1593,6 +1618,190 @@ def _build_invoice_xml_from_template(
             "iva": str(int(iva_rate)),
             "total": _fmt_decimal_places(line_total, item_total_places),
         })
+
+    # gTransp (Transporte) - insert after gCamCond/items to satisfy XSD order
+    if doc_type in ("4", "5", "6"):
+        _remove_child_ns(gdtip, "gTransp", ns_uri)
+    else:
+        debug_xsd = (os.getenv("DEBUG_XSD_ORDER") or "").strip() == "1" and str(doc_type).strip() == "7"
+        if debug_xsd:
+            _debug_xsd_order(root, ns, ns_uri, "before_gtransp")
+        gtransp = _ensure_gtransp_after_items(root, ns, ns_uri, create_if_missing=bool(transporte))
+        if debug_xsd:
+            _debug_xsd_order(root, ns, ns_uri, "after_gtransp")
+        if gtransp is not None and transporte:
+            tip_trans = str(transporte.get("iTipTrans") or transporte.get("tipoTransporte") or "").strip()
+            if tip_trans:
+                _ensure_child_ns(gtransp, "iTipTrans", ns_uri).text = tip_trans
+                _ensure_child_ns(gtransp, "dDesTipTrans", ns_uri).text = TRANS_TIPO_MAP.get(tip_trans, "Tercero")
+
+            mod_trans = str(transporte.get("iModTrans") or transporte.get("modalidad") or "1").strip()
+            if mod_trans:
+                _ensure_child_ns(gtransp, "iModTrans", ns_uri).text = mod_trans
+                _ensure_child_ns(gtransp, "dDesModTrans", ns_uri).text = TRANS_MOD_MAP.get(mod_trans, "Terrestre")
+
+            resp_flete = str(transporte.get("iRespFlete") or transporte.get("tipoResponsable") or "").strip()
+            if resp_flete:
+                _ensure_child_ns(gtransp, "iRespFlete", ns_uri).text = resp_flete
+
+            ini = transporte.get("iniFechaEstimadaTrans") or transporte.get("dIniTras")
+            fin = transporte.get("finFechaEstimadaTrans") or transporte.get("dFinTras")
+            if ini:
+                _ensure_child_ns(gtransp, "dIniTras", ns_uri).text = str(ini).split(" ")[0]
+            if fin:
+                _ensure_child_ns(gtransp, "dFinTras", ns_uri).text = str(fin).split(" ")[0]
+
+            def _set_loc(loc: dict, tag: str) -> None:
+                if not loc:
+                    return
+                g = _ensure_child_ns(gtransp, tag, ns_uri)
+                if tag == "gCamSal":
+                    ddir = "dDirLocSal"
+                    dnum = "dNumCasSal"
+                    dcomp1 = "dComp1Sal"
+                    dcomp2 = "dComp2Sal"
+                    cdep = "cDepSal"
+                    ddep = "dDesDepSal"
+                    cdis = "cDisSal"
+                    ddis = "dDesDisSal"
+                    cciu = "cCiuSal"
+                    dciu = "dDesCiuSal"
+                    dtel = "dTelSal"
+                else:
+                    ddir = "dDirLocEnt"
+                    dnum = "dNumCasEnt"
+                    dcomp1 = "dComp1Ent"
+                    dcomp2 = "dComp2Ent"
+                    cdep = "cDepEnt"
+                    ddep = "dDesDepEnt"
+                    cdis = "cDisEnt"
+                    ddis = "dDesDisEnt"
+                    cciu = "cCiuEnt"
+                    dciu = "dDesCiuEnt"
+                    dtel = "dTelEnt"
+
+                _ensure_child_ns(g, ddir, ns_uri).text = str(loc.get("direccion") or loc.get("dir") or "S/D")
+                _ensure_child_ns(g, dnum, ns_uri).text = str(loc.get("numCasa") or loc.get("numero") or "0")
+                comp1 = loc.get("comp1") or loc.get("complemento1")
+                comp2 = loc.get("comp2") or loc.get("complemento2")
+                if comp1:
+                    _ensure_child_ns(g, dcomp1, ns_uri).text = str(comp1)
+                if comp2:
+                    _ensure_child_ns(g, dcomp2, ns_uri).text = str(comp2)
+
+                dep = loc.get("departamento")
+                dep_code = _zfill_digits(dep, 2) if dep is not None else ""
+                if dep_code:
+                    _ensure_child_ns(g, cdep, ns_uri).text = dep_code
+                    dep_desc = (
+                        _normalize_dep_desc(loc.get("departamentoDesc"))
+                        or _dep_desc_from_code(dep_code)
+                        or _normalize_dep_desc(_geo_name("dep", dep_code))
+                    )
+                    if dep_desc:
+                        _ensure_child_ns(g, ddep, ns_uri).text = dep_desc
+
+                dis = loc.get("distrito")
+                dis_code = _zfill_digits(dis, 4) if dis is not None else ""
+                if dis_code:
+                    _ensure_child_ns(g, cdis, ns_uri).text = dis_code
+                    dis_desc = loc.get("distritoDesc") or _geo_name("dist", dis_code)
+                    if dis_desc:
+                        _ensure_child_ns(g, ddis, ns_uri).text = dis_desc
+
+                ciu = loc.get("ciudad")
+                ciu_code = _zfill_digits(ciu, 5) if ciu is not None else ""
+                if ciu_code:
+                    _ensure_child_ns(g, cciu, ns_uri).text = ciu_code
+                    ciu_desc = (
+                        str(loc.get("ciudadDesc") or "").strip()
+                        or _city_desc_from_code(ciu_code)
+                        or "CIUDAD"
+                    )
+                    _ensure_child_ns(g, dciu, ns_uri).text = ciu_desc[:30]
+
+                tel = loc.get("telefono")
+                if tel:
+                    _ensure_child_ns(g, dtel, ns_uri).text = str(tel)
+
+            if isinstance(transporte, dict):
+                _set_loc(transporte.get("salida") or transporte.get("gCamSal") or {}, "gCamSal")
+                _set_loc(transporte.get("entrega") or transporte.get("gCamEnt") or {}, "gCamEnt")
+
+                veh = transporte.get("vehiculo") or {}
+                if veh:
+                    gveh = _ensure_child_ns(gtransp, "gVehTras", ns_uri)
+                    vtipo = str(veh.get("tipo") or veh.get("dTiVehTras") or "").strip()
+                    if vtipo:
+                        _ensure_child_ns(gveh, "dTiVehTras", ns_uri).text = VEH_TIPO_MAP.get(vtipo, vtipo)
+                    marca = veh.get("marca") or veh.get("dMarVeh")
+                    if marca:
+                        _ensure_child_ns(gveh, "dMarVeh", ns_uri).text = str(marca)
+
+                    tip_id = str(veh.get("documentoTipo") or veh.get("dTipIdenVeh") or "1").strip()
+                    _ensure_child_ns(gveh, "dTipIdenVeh", ns_uri).text = tip_id
+                    nro = veh.get("numeroIden") or veh.get("dNroIDVeh") or veh.get("numeroMat") or veh.get("dNroMatVeh")
+                    if tip_id == "1" and nro:
+                        _ensure_child_ns(gveh, "dNroIDVeh", ns_uri).text = str(nro)
+                    elif tip_id == "2" and nro:
+                        _ensure_child_ns(gveh, "dNroMatVeh", ns_uri).text = str(nro)
+
+                    nro_vuelo = veh.get("numeroVuelo") or veh.get("dNroVuelo")
+                    if mod_trans == "3" and nro_vuelo:
+                        _ensure_child_ns(gveh, "dNroVuelo", ns_uri).text = str(nro_vuelo)
+
+                trans = transporte.get("transportista") or {}
+                if trans or doc_type == "7":
+                    gcam = _ensure_child_ns(gtransp, "gCamTrans", ns_uri)
+                    nat = str(trans.get("tipo") or trans.get("iNatTrans") or "1").strip()
+                    if nat not in ("1", "2"):
+                        nat = "1"
+                    _ensure_child_ns(gcam, "iNatTrans", ns_uri).text = nat
+                    _ensure_child_ns(gcam, "dNomTrans", ns_uri).text = str(trans.get("nombreTr") or trans.get("nombre") or "Transportista")
+
+                    if nat == "1":
+                        ruc_raw = str(trans.get("numeroTr") or trans.get("ruc") or "").strip()
+                        ruc, dv = _split_ruc_dv(ruc_raw)
+                        if not dv and ruc:
+                            try:
+                                dv = str(calc_dv_mod11(ruc))
+                            except Exception:
+                                dv = ""
+                        if ruc:
+                            _ensure_child_ns(gcam, "dRucTrans", ns_uri).text = ruc
+                        if dv:
+                            _ensure_child_ns(gcam, "dDVTrans", ns_uri).text = dv
+                    else:
+                        tip_id = str(trans.get("tipoDocumentoTr") or trans.get("iTipIDTrans") or "1").strip()
+                        if tip_id not in AFE_ID_MAP:
+                            tip_id = "1"
+                        _ensure_child_ns(gcam, "iTipIDTrans", ns_uri).text = tip_id
+                        _ensure_child_ns(gcam, "dDTipIDTrans", ns_uri).text = AFE_ID_MAP.get(tip_id, "Cédula paraguaya")
+                        num_id = trans.get("numeroTr") or trans.get("dNumIDTrans")
+                        if num_id:
+                            _ensure_child_ns(gcam, "dNumIDTrans", ns_uri).text = str(num_id)
+
+                    num_ch = trans.get("numeroCh") or trans.get("dNumIDChof") or "0"
+                    nom_ch = trans.get("nombreCh") or trans.get("dNomChof") or "Chofer"
+                    _ensure_child_ns(gcam, "dNumIDChof", ns_uri).text = str(num_ch)
+                    _ensure_child_ns(gcam, "dNomChof", ns_uri).text = str(nom_ch)
+
+                    dom_fisc = trans.get("direccionTr") or trans.get("dDomFisc")
+                    if dom_fisc:
+                        _ensure_child_ns(gcam, "dDomFisc", ns_uri).text = str(dom_fisc)
+                    dir_ch = trans.get("direccionCh") or trans.get("dDirChof")
+                    if dir_ch:
+                        _ensure_child_ns(gcam, "dDirChof", ns_uri).text = str(dir_ch)
+
+    normalize_autofactura_cam_ae_order_v150(root, ns, doc_type)
+    normalize_gtransp_order_v150(root, ns)
+    normalize_gdtipde_order_v150(root, ns)
+    if str(doc_type).strip() == "7":
+        if (os.getenv("DEBUG_XSD_ORDER") or "").strip() == "1":
+            _debug_xsd_order(root, ns, ns_uri, "before_dep_dis")
+        _ensure_dis_dep_order_v150(root, ns, ns_uri)
+        if (os.getenv("DEBUG_XSD_ORDER") or "").strip() == "1":
+            _debug_xsd_order(root, ns, ns_uri, "after_dep_dis")
 
     iva_total = iva5 + iva10
     total_str = _fmt_decimal_places(total, money_places_default)
@@ -1742,6 +1951,10 @@ def _build_invoice_xml_from_template(
             if fec:
                 _ensure_child_ns(gcam, "dFecEmiDI", ns_uri).text = fec.split(" ")[0]
 
+    normalize_gtotsub_order_v150(root, ns)
+
+    if (os.getenv("DEBUG_XSD_ORDER") or "").strip() == "1" and str(doc_type).strip() == "7":
+        _debug_xsd_order(root, ns, ns_uri, "final_pre_sign")
     out = ET.tostring(root, encoding="utf-8", method="xml")
     return {
         "xml_bytes": out,
@@ -3052,7 +3265,7 @@ def _diagnostics_dry_run() -> dict:
                 doc_number="0000001",
                 doc_type=doc_type,
                 extra_json=extra,
-                issue_dt=datetime.now(),
+                issue_dt=datetime.fromisoformat(sifen_timestamp()),
                 codseg="123456789",
                 establishment="001",
                 point_exp="001",
@@ -3065,7 +3278,7 @@ def _diagnostics_dry_run() -> dict:
                 doc_number="0000002",
                 doc_type=doc_type,
                 extra_json=extra,
-                issue_dt=datetime.now(),
+                issue_dt=datetime.fromisoformat(sifen_timestamp()),
                 codseg="123456789",
                 establishment="001",
                 point_exp="001",
@@ -5499,6 +5712,12 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
         in_path = base_dir / f"rde_input_{build['dnumdoc']}.xml"
         in_path.write_bytes(build["xml_bytes"])
 
+        # Validación estricta de timestamps pre-firma
+        _validate_xml_timestamps_or_raise(build["xml_bytes"], base_dir, "pre-sign rDE")
+
+        # Validación XSD previa a la firma
+        _validate_rde_xsd_or_raise(build["xml_bytes"], base_dir, "pre-sign rDE")
+
         # firma
         p12_path = os.getenv("SIFEN_SIGN_P12_PATH") or os.getenv("SIFEN_P12_PATH") or os.getenv("SIFEN_CERT_PATH")
         p12_password = os.getenv("SIFEN_SIGN_P12_PASSWORD") or os.getenv("SIFEN_P12_PASSWORD") or os.getenv("SIFEN_CERT_PASSWORD")
@@ -5526,7 +5745,7 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
         rel_signed = resolve_existing_xml_path(str(signed_qr_path))
         con.execute(
             "UPDATE invoices SET issued_at=COALESCE(issued_at,?), source_xml_path=? WHERE id=?",
-            (issue_dt.isoformat(timespec="seconds"), rel_signed, invoice_id),
+            (sifen_timestamp(issue_dt), rel_signed, invoice_id),
         )
         con.commit()
 
@@ -5691,6 +5910,12 @@ def _generate_signed_xml_for_invoice(
     in_path = base_dir / f"rde_input_{dnumdoc}.xml"
     in_path.write_bytes(build["xml_bytes"])
 
+    # Validación estricta de timestamps pre-firma
+    _validate_xml_timestamps_or_raise(build["xml_bytes"], base_dir, "pre-sign rDE")
+
+    # Validación XSD previa a la firma
+    _validate_rde_xsd_or_raise(build["xml_bytes"], base_dir, "pre-sign rDE")
+
     signed_bytes = sign_de_with_p12(build["xml_bytes"], p12_path, p12_password)
     signed_path = base_dir / f"rde_signed_{dnumdoc}.xml"
     signed_path.write_bytes(signed_bytes)
@@ -5709,7 +5934,7 @@ def _generate_signed_xml_for_invoice(
         new_status = "READY"
     con.execute(
         "UPDATE invoices SET status=?, issued_at=COALESCE(issued_at,?), source_xml_path=? WHERE id=?",
-        (new_status, issue_dt.isoformat(timespec="seconds"), rel_signed, invoice_id),
+        (new_status, sifen_timestamp(issue_dt), rel_signed, invoice_id),
     )
     con.commit()
 
@@ -6558,3 +6783,478 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"APP_RUN_ERROR: {exc!r}", file=sys.stderr)
         raise
+
+def normalize_gtransp_order_v150(root: ET.Element, ns: dict) -> None:
+    """
+    Normaliza el ORDEN de gTransp dentro de gDtipDE según DE_v150.xsd:
+    ... gCamCond, gCamItem(1..n), gCamEsp?, gTransp?, gCamRDE?
+    """
+    de_node = root.find(".//s:DE", ns)
+    if de_node is None:
+        return
+    dtip = de_node.find("s:gDtipDE", ns)
+    if dtip is None:
+        return
+
+    gtransp = dtip.find("s:gTransp", ns)
+    if gtransp is None:
+        return
+
+    # remover y reinsertar en posición correcta
+    dtip.remove(gtransp)
+
+    # Insertar después de gCamEsp si existe; si no, después del último gCamItem;
+    # si no hay items, después de gCamCond; si no hay cond, al final de los campos específicos (FE/AE/NCDE/NRE) si existen.
+    after = dtip.find("s:gCamEsp", ns)
+
+    if after is None:
+        items = dtip.findall("s:gCamItem", ns)
+        after = items[-1] if items else None
+
+    if after is None:
+        after = dtip.find("s:gCamCond", ns)
+
+    if after is None:
+        # intentar caer después del último de (gCamFE/gCamAE/gCamNCDE/gCamNRE) si existe
+        for tag in ("gCamNRE", "gCamNCDE", "gCamAE", "gCamFE"):
+            cand = dtip.find(f"s:{tag}", ns)
+            if cand is not None:
+                after = cand
+                break
+
+    if after is not None:
+        idx_after = list(dtip).index(after)
+        dtip.insert(idx_after + 1, gtransp)
+    else:
+        dtip.append(gtransp)
+
+
+def _debug_xsd_order(root: ET.Element, ns: dict, ns_uri: str, label: str) -> None:
+    if (os.getenv("DEBUG_XSD_ORDER") or "").strip() != "1":
+        return
+    de_node = root.find(".//s:DE", ns)
+    if de_node is None:
+        print(f"DEBUG_XSD_ORDER {label}: DE not found", flush=True)
+        return
+
+    dtips = de_node.findall("s:gDtipDE", ns)
+    print(f"DEBUG_XSD_ORDER {label}: gDtipDE count={len(dtips)}", flush=True)
+    for idx, dtip in enumerate(dtips, start=1):
+        order = [child.tag.split('}')[-1] for child in list(dtip)]
+        cond_idx = order.index("gCamCond") if "gCamCond" in order else None
+        item_idxs = [i for i, tag in enumerate(order) if tag == "gCamItem"]
+        trans_idx = order.index("gTransp") if "gTransp" in order else None
+        print(
+            f"DEBUG_XSD_ORDER {label}: gDtipDE[{idx}] order={order} "
+            f"gCamCond_idx={cond_idx} gCamItem_idxs={item_idxs} gTransp_idx={trans_idx}",
+            flush=True,
+        )
+        if trans_idx is not None and (item_idxs or cond_idx is not None):
+            last_item = item_idxs[-1] if item_idxs else None
+            anchor_idx = last_item if last_item is not None else cond_idx
+            if anchor_idx is not None and trans_idx <= anchor_idx:
+                print(
+                    f"DEBUG_XSD_ORDER {label}: WARNING gTransp before anchor "
+                    f"(anchor_idx={anchor_idx}, gTransp_idx={trans_idx})",
+                    flush=True,
+                )
+
+    parent_map = {child: parent for parent in de_node.iter() for child in list(parent)}
+    parents = []
+    for child, parent in parent_map.items():
+        if child.tag == f"{{{ns_uri}}}gTransp":
+            parents.append(parent.tag.split("}")[-1])
+    if parents:
+        print(f"DEBUG_XSD_ORDER {label}: gTransp parents={parents}", flush=True)
+
+    def _debug_loc(
+        loc_tag: str,
+        cdep_tag: str,
+        ddep_tag: str,
+        cdis_tag: str,
+        cciu_tag: str,
+        dciu_tag: str,
+        dtel_tag: str,
+    ) -> None:
+        loc_nodes = de_node.findall(f".//s:{loc_tag}", ns)
+        print(f"DEBUG_XSD_ORDER {label}: {loc_tag} count={len(loc_nodes)}", flush=True)
+        for idx, loc in enumerate(loc_nodes, start=1):
+            order = [child.tag.split("}")[-1] for child in list(loc)]
+            cdep_idx = order.index(cdep_tag) if cdep_tag in order else None
+            ddep_idx = order.index(ddep_tag) if ddep_tag in order else None
+            cdis_idx = order.index(cdis_tag) if cdis_tag in order else None
+            cciu_idx = order.index(cciu_tag) if cciu_tag in order else None
+            dciu_idx = order.index(dciu_tag) if dciu_tag in order else None
+            dtel_idx = order.index(dtel_tag) if dtel_tag in order else None
+            cdep_val = (_find_direct_child_ns(loc, cdep_tag, ns_uri).text or "").strip() if _find_direct_child_ns(loc, cdep_tag, ns_uri) is not None else ""
+            ddep_val = (_find_direct_child_ns(loc, ddep_tag, ns_uri).text or "").strip() if _find_direct_child_ns(loc, ddep_tag, ns_uri) is not None else ""
+            cciu_val = (_find_direct_child_ns(loc, cciu_tag, ns_uri).text or "").strip() if _find_direct_child_ns(loc, cciu_tag, ns_uri) is not None else ""
+            dciu_val = (_find_direct_child_ns(loc, dciu_tag, ns_uri).text or "").strip() if _find_direct_child_ns(loc, dciu_tag, ns_uri) is not None else ""
+            print(
+                f"DEBUG_XSD_ORDER {label}: {loc_tag}[{idx}] order={order} "
+                f"{cdep_tag}_idx={cdep_idx} {ddep_tag}_idx={ddep_idx} {cdis_tag}_idx={cdis_idx} "
+                f"{cciu_tag}_idx={cciu_idx} {dciu_tag}_idx={dciu_idx} {dtel_tag}_idx={dtel_idx} "
+                f"values=({cdep_tag}={cdep_val!r}, {ddep_tag}={ddep_val!r}, {cciu_tag}={cciu_val!r}, {dciu_tag}={dciu_val!r})",
+                flush=True,
+            )
+            if ddep_idx is not None and cdis_idx is not None and ddep_idx > cdis_idx:
+                print(
+                    f"DEBUG_XSD_ORDER {label}: WARNING {loc_tag}[{idx}] {ddep_tag} after {cdis_tag}",
+                    flush=True,
+                )
+            if dciu_idx is not None and dtel_idx is not None and dciu_idx > dtel_idx:
+                print(
+                    f"DEBUG_XSD_ORDER {label}: WARNING {loc_tag}[{idx}] {dciu_tag} after {dtel_tag}",
+                    flush=True,
+                )
+
+    _debug_loc("gCamSal", "cDepSal", "dDesDepSal", "cDisSal", "cCiuSal", "dDesCiuSal", "dTelSal")
+    _debug_loc("gCamEnt", "cDepEnt", "dDesDepEnt", "cDisEnt", "cCiuEnt", "dDesCiuEnt", "dTelEnt")
+
+
+def _find_direct_child_ns(parent: ET.Element, tag: str, ns_uri: str) -> Optional[ET.Element]:
+    target = f"{{{ns_uri}}}{tag}"
+    for child in list(parent):
+        if child.tag == target:
+            return child
+    return None
+
+
+def _ensure_dis_dep_order_v150(root: ET.Element, ns: dict, ns_uri: str) -> None:
+    de_node = root.find(".//s:DE", ns)
+    if de_node is None:
+        return
+
+    def _fix_loc(
+        gtransp: ET.Element,
+        loc_tag: str,
+        cdep_tag: str,
+        ddep_tag: str,
+        cdis_tag: str,
+        cciu_tag: str,
+        dciu_tag: str,
+        dtel_tag: str,
+    ) -> None:
+        loc_node = _find_direct_child_ns(gtransp, loc_tag, ns_uri)
+        related_found = False
+        for parent in gtransp.iter():
+            for child in list(parent):
+                tag = child.tag.split("}")[-1]
+                if tag in (cdep_tag, ddep_tag, cdis_tag, cciu_tag, dciu_tag, dtel_tag):
+                    related_found = True
+                    break
+            if related_found:
+                break
+        if loc_node is None:
+            if not related_found:
+                return
+            loc_node = ET.SubElement(gtransp, f"{{{ns_uri}}}{loc_tag}")
+
+        # Move misplaced direct address fields into the expected location block.
+        for tag in (cdep_tag, ddep_tag, cdis_tag, cciu_tag, dciu_tag, dtel_tag):
+            ns_tag = f"{{{ns_uri}}}{tag}"
+            for parent in list(gtransp.iter()):
+                if parent is loc_node:
+                    continue
+                for child in list(parent):
+                    if child.tag == ns_tag:
+                        parent.remove(child)
+                        loc_node.append(child)
+
+        cdep_el = _find_direct_child_ns(loc_node, cdep_tag, ns_uri)
+        ddep_el = _find_direct_child_ns(loc_node, ddep_tag, ns_uri)
+        dep_desc = _normalize_dep_desc((ddep_el.text or "").strip()) if ddep_el is not None else ""
+        if not dep_desc and cdep_el is not None:
+            dep_desc = (
+                _dep_desc_from_code(cdep_el.text or "")
+                or _normalize_dep_desc(_geo_name("dep", cdep_el.text or ""))
+            )
+
+        if dep_desc:
+            if ddep_el is None:
+                ddep_el = ET.Element(f"{{{ns_uri}}}{ddep_tag}")
+                children = list(loc_node)
+                if cdep_el is not None and cdep_el in children:
+                    loc_node.insert(children.index(cdep_el) + 1, ddep_el)
+                elif children:
+                    loc_node.insert(0, ddep_el)
+                else:
+                    loc_node.append(ddep_el)
+            ddep_el.text = dep_desc
+        elif ddep_el is not None:
+            loc_node.remove(ddep_el)
+            ddep_el = None
+
+        cdis_el = _find_direct_child_ns(loc_node, cdis_tag, ns_uri)
+        if ddep_el is not None and cdis_el is not None:
+            children = list(loc_node)
+            if children.index(ddep_el) > children.index(cdis_el):
+                loc_node.remove(cdis_el)
+                children = list(loc_node)
+                loc_node.insert(children.index(ddep_el) + 1, cdis_el)
+
+        cciu_el = _find_direct_child_ns(loc_node, cciu_tag, ns_uri)
+        dciu_el = _find_direct_child_ns(loc_node, dciu_tag, ns_uri)
+        if cciu_el is not None:
+            city_desc = (dciu_el.text or "").strip() if dciu_el is not None else ""
+            if not city_desc:
+                city_desc = _city_desc_from_code(cciu_el.text or "") or "CIUDAD"
+            city_desc = city_desc[:30]
+            if dciu_el is None:
+                dciu_el = ET.Element(f"{{{ns_uri}}}{dciu_tag}")
+                children = list(loc_node)
+                if cciu_el in children:
+                    loc_node.insert(children.index(cciu_el) + 1, dciu_el)
+                else:
+                    loc_node.append(dciu_el)
+            dciu_el.text = city_desc
+
+        dtel_el = _find_direct_child_ns(loc_node, dtel_tag, ns_uri)
+        if cciu_el is not None and dciu_el is not None:
+            children = list(loc_node)
+            if children.index(dciu_el) < children.index(cciu_el):
+                loc_node.remove(dciu_el)
+                children = list(loc_node)
+                loc_node.insert(children.index(cciu_el) + 1, dciu_el)
+        if dtel_el is not None and dciu_el is not None:
+            children = list(loc_node)
+            if children.index(dtel_el) < children.index(dciu_el):
+                loc_node.remove(dtel_el)
+                children = list(loc_node)
+                loc_node.insert(children.index(dciu_el) + 1, dtel_el)
+
+    for gtransp in de_node.findall(".//s:gTransp", ns):
+        _fix_loc(gtransp, "gCamSal", "cDepSal", "dDesDepSal", "cDisSal", "cCiuSal", "dDesCiuSal", "dTelSal")
+        _fix_loc(gtransp, "gCamEnt", "cDepEnt", "dDesDepEnt", "cDisEnt", "cCiuEnt", "dDesCiuEnt", "dTelEnt")
+
+
+def _ensure_gtransp_after_items(
+    root: ET.Element,
+    ns: dict,
+    ns_uri: str,
+    *,
+    create_if_missing: bool = False,
+) -> Optional[ET.Element]:
+    de_node = root.find(".//s:DE", ns)
+    if de_node is None:
+        return None
+    dtips = de_node.findall("s:gDtipDE", ns)
+    if not dtips:
+        return None
+
+    target_dtip = None
+    for dtip in dtips:
+        if dtip.findall("s:gCamItem", ns):
+            target_dtip = dtip
+            break
+    if target_dtip is None:
+        for dtip in dtips:
+            if dtip.find("s:gCamCond", ns) is not None:
+                target_dtip = dtip
+                break
+    if target_dtip is None:
+        target_dtip = dtips[0]
+
+    gtransp_pairs: list[tuple[ET.Element, ET.Element]] = []
+    for parent in de_node.iter():
+        for child in list(parent):
+            if child.tag == f"{{{ns_uri}}}gTransp":
+                gtransp_pairs.append((parent, child))
+
+    gtransp = None
+    gtransp_parent = None
+    for parent, child in gtransp_pairs:
+        if parent is target_dtip:
+            gtransp = child
+            gtransp_parent = parent
+            break
+    if gtransp is None and gtransp_pairs:
+        gtransp_parent, gtransp = gtransp_pairs[0]
+
+    for parent, child in gtransp_pairs[1:]:
+        if child is gtransp:
+            continue
+        parent.remove(child)
+
+    if gtransp is None and create_if_missing:
+        gtransp = ET.Element(f"{{{ns_uri}}}gTransp")
+        gtransp_parent = None
+
+    if gtransp is None:
+        return None
+
+    items = target_dtip.findall("s:gCamItem", ns)
+    if items:
+        anchor = items[-1]
+    else:
+        anchor = target_dtip.find("s:gCamCond", ns)
+        if anchor is None:
+            anchor = None
+            for tag in ("gCamNRE", "gCamNCDE", "gCamAE", "gCamFE"):
+                cand = target_dtip.find(f"s:{tag}", ns)
+                if cand is not None:
+                    anchor = cand
+                    break
+
+    children = list(target_dtip)
+    if gtransp in children and anchor is not None:
+        if children.index(gtransp) > children.index(anchor):
+            return gtransp
+        target_dtip.remove(gtransp)
+    elif gtransp in children and anchor is None:
+        return gtransp
+    elif gtransp_parent is not None and gtransp_parent is not target_dtip:
+        try:
+            gtransp_parent.remove(gtransp)
+        except ValueError:
+            pass
+
+    if anchor is not None:
+        idx_after = list(target_dtip).index(anchor)
+        target_dtip.insert(idx_after + 1, gtransp)
+    else:
+        target_dtip.append(gtransp)
+    return gtransp
+
+
+def normalize_autofactura_cam_ae_order_v150(
+    root: ET.Element,
+    ns: dict,
+    doc_type: str,
+) -> None:
+    """Para iTiDE=4, asegura gCamAE antes de gCamCond y gCamItem."""
+    if str(doc_type).strip() != "4":
+        return
+    de_node = root.find(".//s:DE", ns)
+    if de_node is None:
+        return
+    dtip = de_node.find("s:gDtipDE", ns)
+    if dtip is None:
+        return
+    cam_ae = dtip.find("s:gCamAE", ns)
+    if cam_ae is None:
+        return
+    dtip.remove(cam_ae)
+    gcamcond = dtip.find("s:gCamCond", ns)
+    if gcamcond is not None:
+        idx = list(dtip).index(gcamcond)
+        dtip.insert(idx, cam_ae)
+        return
+
+    items = dtip.findall("s:gCamItem", ns)
+    if items:
+        first_item = items[0]
+        idx = list(dtip).index(first_item)
+        dtip.insert(idx, cam_ae)
+        return
+
+    dtip.append(cam_ae)
+
+def normalize_gdtipde_order_v150(root: ET.Element, ns: dict) -> None:
+    """
+    Reordena los hijos de gDtipDE según XSD v150 (tgDtipDE), sin crear ni eliminar nodos.
+    Orden: gCamFE?, gCamAE?, gCamNCDE?, gCamNRE?, gCamCond?, gCamItem(1..n), gCamEsp?, gTransp?, gCamRDE?
+    """
+    de_node = root.find(".//s:DE", ns)
+    if de_node is None:
+        return
+    dtip = de_node.find("s:gDtipDE", ns)
+    if dtip is None:
+        return
+
+    children = list(dtip)
+    if not children:
+        return
+
+    order = [
+        "gCamFE",
+        "gCamAE",
+        "gCamNCDE",
+        "gCamNRE",
+        "gCamCond",
+        "gCamItem",
+        "gCamEsp",
+        "gTransp",
+        "gCamRDE",
+    ]
+    buckets = {tag: [] for tag in order}
+    others = []
+
+    for child in children:
+        tag = child.tag.split("}")[-1]
+        if tag in buckets:
+            buckets[tag].append(child)
+        else:
+            others.append(child)
+
+    new_children = []
+    for tag in order:
+        new_children.extend(buckets[tag])
+
+    if not new_children and not others:
+        return
+
+    # Reemplazar orden completo respetando la lista definida; conservar nodos desconocidos al final.
+    for child in list(dtip):
+        dtip.remove(child)
+    for child in new_children + others:
+        dtip.append(child)
+
+
+def normalize_gtotsub_order_v150(root: ET.Element, ns: dict) -> None:
+    """Reordena los hijos de gTotSub según XSD v150 (tgTotSub), sin crear nodos."""
+    de_node = root.find(".//s:DE", ns)
+    if de_node is None:
+        return
+    gtot = de_node.find("s:gTotSub", ns)
+    if gtot is None:
+        return
+
+    order = [
+        "dSubExe",
+        "dSubExo",
+        "dSub5",
+        "dSub10",
+        "dTotOpe",
+        "dTotDesc",
+        "dTotDescGlotem",
+        "dTotAntItem",
+        "dTotAnt",
+        "dPorcDescTotal",
+        "dDescTotal",
+        "dAnticipo",
+        "dRedon",
+        "dComi",
+        "dTotGralOpe",
+        "dIVA5",
+        "dIVA10",
+        "dLiqTotIVA5",
+        "dLiqTotIVA10",
+        "dIVAComi",
+        "dTotIVA",
+        "dBaseGrav5",
+        "dBaseGrav10",
+        "dTBasGraIVA",
+        "dTotalGs",
+    ]
+
+    buckets = {tag: [] for tag in order}
+    unknown = []
+    for ch in list(gtot):
+        ln = ch.tag.split("}")[-1]
+        if ln in buckets:
+            buckets[ln].append(ch)
+        else:
+            unknown.append(ch)
+
+    for ch in list(gtot):
+        gtot.remove(ch)
+    for tag in order:
+        for ch in buckets[tag]:
+            gtot.append(ch)
+    for ch in unknown:
+        gtot.append(ch)
+
+    if unknown:
+        unknown_names = [ch.tag.split("}")[-1] for ch in unknown]
+        app.logger.debug("gTotSub: nodos no contemplados en orden v150: %s", unknown_names)

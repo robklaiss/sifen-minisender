@@ -1375,6 +1375,14 @@ def _build_invoice_xml_from_template(
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)
     _update_text(root, ".//s:dFecFirma", iso, ns)
 
+    if str(doc_type) == "7":
+        de_node = root.find(".//s:DE", ns)
+        gdg = de_node.find("s:gDatGralOpe", ns) if de_node is not None else None
+        if gdg is not None:
+            gop = gdg.find("s:gOpeCom", ns)
+            if gop is not None:
+                gdg.remove(gop)
+
     extra_json = extra_json or {}
     codseg_digits: Optional[str] = None
     if str(doc_type) == "7":
@@ -5815,6 +5823,26 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
             (sifen_timestamp(issue_dt), rel_signed, invoice_id),
         )
         con.commit()
+
+    if doc_type == "7":
+        xml_text = signed_qr_text
+        if not xml_text and rel_signed:
+            xml_path = Path(rel_signed)
+            if not xml_path.is_absolute():
+                xml_path = _repo_root() / xml_path
+            if xml_path.exists():
+                xml_text = xml_path.read_text(encoding="utf-8")
+        if xml_text:
+            try:
+                xml_root = ET.fromstring(xml_text)
+            except ET.ParseError:
+                xml_root = None
+            if xml_root is not None:
+                ns = {"s": "http://ekuatia.set.gov.py/sifen/xsd"}
+                gdg = xml_root.find(".//s:gDatGralOpe", ns)
+                gop = gdg.find("s:gOpeCom", ns) if gdg is not None else None
+                if gop is not None:
+                    abort(400, "iTiDE=7 no permite gOpeCom (SIFEN 1201).")
 
     # enviar a SIFEN
     repo_root_path = _repo_root()

@@ -1319,6 +1319,13 @@ def _strip_nre_forbidden_groups(root: ET.Element, ns: dict) -> None:
         return
     for item in gdtip.findall("s:gCamItem", ns) if ns else gdtip.findall("gCamItem"):
         _strip_nre_item_pricing(item, ns_uri)
+    for gtransp in de_node.findall(".//s:gTransp", ns) if ns else de_node.findall(".//gTransp"):
+        gsal = gtransp.find("s:gCamSal", ns) if ns else gtransp.find("gCamSal")
+        if gsal is not None:
+            _remove_children_ns(gsal, ["dDesDepSal", "dDesDisSal", "dDesCiuSal"], ns_uri)
+        gent = gtransp.find("s:gCamEnt", ns) if ns else gtransp.find("gCamEnt")
+        if gent is not None:
+            _remove_children_ns(gent, ["dDesDepEnt", "dDesDisEnt", "dDesCiuEnt"], ns_uri)
 
 def _xml_contains_nre_pricing(xml_text: str) -> bool:
     if not xml_text:
@@ -1858,36 +1865,42 @@ def _build_invoice_xml_from_template(
                 dep_code = _zfill_digits(dep, 2) if dep is not None else ""
                 if dep_code:
                     _ensure_child_ns(g, cdep, ns_uri).text = dep_code
-                    dep_desc = (
-                        _normalize_dep_desc(loc.get("departamentoDesc"))
-                        or _dep_desc_from_code(dep_code)
-                        or _normalize_dep_desc(_geo_name("dep", dep_code))
-                    )
-                    if dep_desc:
-                        _ensure_child_ns(g, ddep, ns_uri).text = dep_desc
+                    if doc_type != "7":
+                        dep_desc = (
+                            _normalize_dep_desc(loc.get("departamentoDesc"))
+                            or _dep_desc_from_code(dep_code)
+                            or _normalize_dep_desc(_geo_name("dep", dep_code))
+                        )
+                        if dep_desc:
+                            _ensure_child_ns(g, ddep, ns_uri).text = dep_desc
 
                 dis = loc.get("distrito")
                 dis_code = _zfill_digits(dis, 4) if dis is not None else ""
                 if dis_code:
                     _ensure_child_ns(g, cdis, ns_uri).text = dis_code
-                    dis_desc = loc.get("distritoDesc") or _geo_name("dist", dis_code)
-                    if dis_desc:
-                        _ensure_child_ns(g, ddis, ns_uri).text = dis_desc
+                    if doc_type != "7":
+                        dis_desc = loc.get("distritoDesc") or _geo_name("dist", dis_code)
+                        if dis_desc:
+                            _ensure_child_ns(g, ddis, ns_uri).text = dis_desc
 
                 ciu = loc.get("ciudad")
                 ciu_code = _zfill_digits(ciu, 5) if ciu is not None else ""
                 if ciu_code:
                     _ensure_child_ns(g, cciu, ns_uri).text = ciu_code
-                    ciu_desc = (
-                        str(loc.get("ciudadDesc") or "").strip()
-                        or _city_desc_from_code(ciu_code)
-                        or "CIUDAD"
-                    )
-                    _ensure_child_ns(g, dciu, ns_uri).text = ciu_desc[:30]
+                    if doc_type != "7":
+                        ciu_desc = (
+                            str(loc.get("ciudadDesc") or "").strip()
+                            or _city_desc_from_code(ciu_code)
+                            or "CIUDAD"
+                        )
+                        _ensure_child_ns(g, dciu, ns_uri).text = ciu_desc[:30]
 
                 tel = loc.get("telefono")
                 if tel:
                     _ensure_child_ns(g, dtel, ns_uri).text = str(tel)
+
+                if doc_type == "7":
+                    _remove_children_ns(g, [ddep, ddis, dciu], ns_uri)
 
             if isinstance(transporte, dict):
                 _set_loc(transporte.get("salida") or transporte.get("gCamSal") or {}, "gCamSal")
@@ -5970,6 +5983,16 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
                 gop = gdg.find("s:gOpeCom", ns) if gdg is not None else None
                 if gop is not None:
                     abort(400, "iTiDE=7 no permite gOpeCom (SIFEN 1201).")
+                for path in [
+                    ".//s:gTransp/s:gCamSal/s:dDesDepSal",
+                    ".//s:gTransp/s:gCamSal/s:dDesDisSal",
+                    ".//s:gTransp/s:gCamSal/s:dDesCiuSal",
+                    ".//s:gTransp/s:gCamEnt/s:dDesDepEnt",
+                    ".//s:gTransp/s:gCamEnt/s:dDesDisEnt",
+                    ".//s:gTransp/s:gCamEnt/s:dDesCiuEnt",
+                ]:
+                    if xml_root.find(path, ns) is not None:
+                        abort(400, "NRE iTiDE=7 no permite dDes* en gCamSal/gCamEnt (SIFEN 1851)")
             elif _xml_contains_nre_pricing(xml_text):
                 abort(400, "NRE iTiDE=7 no permite gValorItem (SIFEN 1851)")
 

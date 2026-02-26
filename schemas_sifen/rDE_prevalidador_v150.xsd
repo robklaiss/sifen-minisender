@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema
+        xmlns:xs="http://www.w3.org/2001/XMLSchema"
+        elementFormDefault="qualified"
+        xmlns="http://ekuatia.set.gov.py/sifen/xsd"
+        xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
+        targetNamespace="http://ekuatia.set.gov.py/sifen/xsd">
+    
+    <!-- Importar definiciones XMLDSig -->
+    <xs:import namespace="http://www.w3.org/2000/09/xmldsig#" schemaLocation="xmldsig-core-schema.xsd"/>
+    
+    <!-- Incluir definiciones del DE original -->
+    <xs:include schemaLocation="DE_v150.xsd"/>
+    
+    <!-- Redefinir rDE para que Signature sea opcional (para prevalidador) -->
+    <xs:complexType name="rDE_prevalidador">
+        <xs:sequence>
+            <xs:element name="dVerFor">
+                <xs:simpleType>
+                    <xs:restriction base="xs:integer">
+                        <xs:pattern value="[1][5][0]" />
+                    </xs:restriction>
+                </xs:simpleType>
+            </xs:element>
+            
+            <xs:element name="DE" type="tDE" />
+            
+            <!-- Signature opcional para prevalidador -->
+            <xs:element ref="ds:Signature" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Firma Digital del DE (opcional para prevalidador)
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            
+            <!-- gCamFuFD opcional para evitar rechazos en prevalidador -->
+            <xs:element name="gCamFuFD" type="tgCamFuFD" minOccurs="0" />
+        </xs:sequence>
+    </xs:complexType>
+    
+    <!-- Elemento rDE para prevalidador -->
+    <xs:element name="rDE" type="rDE_prevalidador"/>
+    
+</xs:schema>

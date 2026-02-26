@@ -13,7 +13,7 @@ def main():
     print("RUN all_doc_types"); test_xsd_presign_all_doc_types_v150(); print("OK all_doc_types")
     print("RUN nre"); test_nre_presign_xsd_v150(); print("OK nre")
 
-    print("\\n== smoke: barrido itide (pre-sign XSD) ==")
+    print("\n== smoke: barrido itide (pre-sign XSD) ==")
     with webapp.app.app_context():
         webapp.init_db()
         webapp.set_setting("timbrado_num", "18578288")
@@ -49,7 +49,7 @@ def main():
                 print("errors:", errs[:10])
                 return 1
 
-    print("\\nOK: SMOKE TEST COMPLETO")
+    print("\nOK: SMOKE TEST COMPLETO")
     return 0
 
 if __name__ == "__main__":

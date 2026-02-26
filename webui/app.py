@@ -17,6 +17,7 @@ import unicodedata
 from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
 from datetime import datetime, date
+from zoneinfo import ZoneInfo
 from flask import Flask, g, request, redirect, url_for, render_template_string, abort, send_file, jsonify
 from pathlib import Path
 from typing import Optional, Tuple
@@ -1362,6 +1363,9 @@ def _build_invoice_xml_from_template(
     _update_text(root, ".//s:gTimb/s:iTiDE", doc_type, ns)
     _update_text(root, ".//s:gTimb/s:dDesTiDE", doc_type_label(doc_type), ns)
 
+    if isinstance(issue_dt, str) and _SIFEN_TS_RE.fullmatch(issue_dt):
+        dt = datetime.fromisoformat(issue_dt).replace(tzinfo=ZoneInfo("UTC"))
+        issue_dt = dt.astimezone(ZoneInfo("America/Asuncion"))
     iso = _ensure_sifen_ts(sifen_timestamp(issue_dt), "build_invoice_xml")
     now = datetime.fromisoformat(iso)
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)

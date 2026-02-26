@@ -1288,6 +1288,39 @@ def _remove_child_ns(parent: ET.Element, tag: str, ns_uri: str) -> None:
     if child is not None:
         parent.remove(child)
 
+def _remove_children_ns(parent: ET.Element, tags: list[str], ns_uri: str) -> None:
+    for tag in tags:
+        _remove_child_ns(parent, tag, ns_uri)
+
+def _strip_nre_item_pricing(item: ET.Element, ns_uri: str) -> None:
+    _remove_children_ns(
+        item,
+        [
+            "gValorItem",
+            "dPUniProSer",
+            "dTotBruOpeItem",
+            "dTotOpeItem",
+            "dDescItem",
+            "dPorcDesIt",
+            "gValorRestaItem",
+        ],
+        ns_uri,
+    )
+
+def _xml_contains_nre_pricing(xml_text: str) -> bool:
+    if not xml_text:
+        return False
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return "<gValorItem" in xml_text or "<dPUniProSer" in xml_text
+    ns = {"s": "http://ekuatia.set.gov.py/sifen/xsd"}
+    if root.find(".//s:gValorItem", ns) is not None:
+        return True
+    if root.find(".//s:dPUniProSer", ns) is not None:
+        return True
+    return False
+
 def _fill_geo_desc_in(parent: Optional[ET.Element], code_tag: str, desc_tag: str, kind: str, ns_uri: str) -> None:
     if parent is None:
         return
@@ -1620,6 +1653,8 @@ def _build_invoice_xml_from_template(
         raise RuntimeError("No se encontró <gCamItem> en el XML base.")
 
     base_item = copy.deepcopy(existing_items[0])
+    if doc_type == "7":
+        _strip_nre_item_pricing(base_item, ns_uri)
     for item in existing_items:
         gdtip.remove(item)
 
@@ -1703,26 +1738,29 @@ def _build_invoice_xml_from_template(
         _update_text(item, "s:dCodInt", f"{idx:03d}", ns)
         _update_text(item, "s:dDesProSer", _line_get(line, "description", "") or "", ns)
         _update_text(item, "s:dCantProSer", _fmt_decimal_places(qty, qty_places), ns)
-        _update_text(item, "s:gValorItem/s:dPUniProSer", _fmt_decimal_places(price_unit, unit_places), ns)
-        _update_text(item, "s:gValorItem/s:dTotBruOpeItem", _fmt_decimal_places(line_total, item_total_places), ns)
-        _update_text(item, "s:gValorItem/s:gValorRestaItem/s:dTotOpeItem", _fmt_decimal_places(line_total, op_item_places), ns)
+        if doc_type != "7":
+            _update_text(item, "s:gValorItem/s:dPUniProSer", _fmt_decimal_places(price_unit, unit_places), ns)
+            _update_text(item, "s:gValorItem/s:dTotBruOpeItem", _fmt_decimal_places(line_total, item_total_places), ns)
+            _update_text(item, "s:gValorItem/s:gValorRestaItem/s:dTotOpeItem", _fmt_decimal_places(line_total, op_item_places), ns)
 
-        gcamiva = item.find("s:gCamIVA", ns)
-        if gcamiva is not None:
-            _update_text(gcamiva, "s:iAfecIVA", afec, ns)
-            _update_text(gcamiva, "s:dDesAfecIVA", afec_desc.get(afec, "Gravado IVA"), ns)
-            _update_text(gcamiva, "s:dPropIVA", "100" if afec == "1" else "0", ns)
-            _update_text(gcamiva, "s:dTasaIVA", str(int(iva_rate)), ns)
-            _update_text(gcamiva, "s:dBasGravIVA", _fmt_decimal_places(base, base_places), ns)
-            _update_text(gcamiva, "s:dLiqIVAItem", _fmt_decimal_places(iva, iva_places), ns)
-            dbase = gcamiva.find("s:dBasExe", ns)
-            dbase_value = line_total if afec in ("2", "3") else Decimal("0")
-            dbase_text = _fmt_decimal_places(dbase_value, item_total_places)
-            if dbase is None:
-                ET.SubElement(gcamiva, f"{{{ns_uri}}}dBasExe").text = dbase_text
-            else:
-                dbase.text = dbase_text
+            gcamiva = item.find("s:gCamIVA", ns)
+            if gcamiva is not None:
+                _update_text(gcamiva, "s:iAfecIVA", afec, ns)
+                _update_text(gcamiva, "s:dDesAfecIVA", afec_desc.get(afec, "Gravado IVA"), ns)
+                _update_text(gcamiva, "s:dPropIVA", "100" if afec == "1" else "0", ns)
+                _update_text(gcamiva, "s:dTasaIVA", str(int(iva_rate)), ns)
+                _update_text(gcamiva, "s:dBasGravIVA", _fmt_decimal_places(base, base_places), ns)
+                _update_text(gcamiva, "s:dLiqIVAItem", _fmt_decimal_places(iva, iva_places), ns)
+                dbase = gcamiva.find("s:dBasExe", ns)
+                dbase_value = line_total if afec in ("2", "3") else Decimal("0")
+                dbase_text = _fmt_decimal_places(dbase_value, item_total_places)
+                if dbase is None:
+                    ET.SubElement(gcamiva, f"{{{ns_uri}}}dBasExe").text = dbase_text
+                else:
+                    dbase.text = dbase_text
 
+        if doc_type == "7":
+            _strip_nre_item_pricing(item, ns_uri)
         gdtip.append(item)
 
         items_for_pdf.append({
@@ -5852,6 +5890,10 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
             abort(400, "Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar.")
 
         signed_bytes = sign_de_with_p12(build["xml_bytes"], p12_path, p12_password)
+        if doc_type == "7":
+            signed_text = signed_bytes.decode("utf-8", errors="ignore")
+            if _xml_contains_nre_pricing(signed_text):
+                abort(400, "NRE no permite gValorItem (SIFEN 1851)")
         signed_path = base_dir / f"rde_signed_{build['dnumdoc']}.xml"
         signed_path.write_bytes(signed_bytes)
 
@@ -5891,12 +5933,16 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
                 xml_root = None
             if xml_root is not None:
                 ns = {"s": "http://ekuatia.set.gov.py/sifen/xsd"}
+                if xml_root.find(".//s:gValorItem", ns) is not None or xml_root.find(".//s:dPUniProSer", ns) is not None:
+                    abort(400, "NRE no permite gValorItem (SIFEN 1851)")
                 if xml_root.find(".//s:gDtipDE/s:gCamCond", ns) is not None:
                     abort(400, "iTiDE=7 no permite gCamCond (SIFEN 1501). Generá un XML sin condición de operación.")
                 gdg = xml_root.find(".//s:gDatGralOpe", ns)
                 gop = gdg.find("s:gOpeCom", ns) if gdg is not None else None
                 if gop is not None:
                     abort(400, "iTiDE=7 no permite gOpeCom (SIFEN 1201).")
+            elif _xml_contains_nre_pricing(xml_text):
+                abort(400, "NRE no permite gValorItem (SIFEN 1851)")
 
     # enviar a SIFEN
     repo_root_path = _repo_root()
@@ -6066,6 +6112,10 @@ def _generate_signed_xml_for_invoice(
     _validate_rde_xsd_or_raise(build["xml_bytes"], base_dir, "pre-sign rDE")
 
     signed_bytes = sign_de_with_p12(build["xml_bytes"], p12_path, p12_password)
+    if doc_type == "7":
+        signed_text = signed_bytes.decode("utf-8", errors="ignore")
+        if _xml_contains_nre_pricing(signed_text):
+            raise RuntimeError("NRE no permite gValorItem (SIFEN 1851)")
     signed_path = base_dir / f"rde_signed_{dnumdoc}.xml"
     signed_path.write_bytes(signed_bytes)
 

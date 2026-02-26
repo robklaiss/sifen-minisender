@@ -14,6 +14,8 @@ import random
 import secrets
 import zipfile
 import unicodedata
+import csv
+from functools import lru_cache
 from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
 from datetime import datetime, date, timedelta
@@ -1319,13 +1321,37 @@ def _strip_nre_forbidden_groups(root: ET.Element, ns: dict) -> None:
         return
     for item in gdtip.findall("s:gCamItem", ns) if ns else gdtip.findall("gCamItem"):
         _strip_nre_item_pricing(item, ns_uri)
+    lookup = _load_geo_lookup()
     for gtransp in de_node.findall(".//s:gTransp", ns) if ns else de_node.findall(".//gTransp"):
-        gsal = gtransp.find("s:gCamSal", ns) if ns else gtransp.find("gCamSal")
-        if gsal is not None:
-            _remove_children_ns(gsal, ["dDesDepSal", "dDesDisSal", "dDesCiuSal"], ns_uri)
-        gent = gtransp.find("s:gCamEnt", ns) if ns else gtransp.find("gCamEnt")
-        if gent is not None:
-            _remove_children_ns(gent, ["dDesDepEnt", "dDesDisEnt", "dDesCiuEnt"], ns_uri)
+        for loc_tag, dep_tag, ddep_tag, dis_tag, ddis_tag, ciu_tag, dciu_tag in [
+            ("gCamSal", "cDepSal", "dDesDepSal", "cDisSal", "dDesDisSal", "cCiuSal", "dDesCiuSal"),
+            ("gCamEnt", "cDepEnt", "dDesDepEnt", "cDisEnt", "dDesDisEnt", "cCiuEnt", "dDesCiuEnt"),
+        ]:
+            loc = gtransp.find(f"s:{loc_tag}", ns) if ns else gtransp.find(loc_tag)
+            if loc is None:
+                continue
+            dep_el = _find_direct_child_ns(loc, dep_tag, ns_uri)
+            dis_el = _find_direct_child_ns(loc, dis_tag, ns_uri)
+            ciu_el = _find_direct_child_ns(loc, ciu_tag, ns_uri)
+            dep = _norm_geo_code(dep_el.text if dep_el is not None else "")
+            dis = _norm_geo_code(dis_el.text if dis_el is not None else "")
+            ciu = _norm_geo_code(ciu_el.text if ciu_el is not None else "")
+            if not (dep and dis and ciu):
+                continue
+            names = lookup.get((dep, dis, ciu)) if lookup else None
+            if not names:
+                _remove_children_ns(loc, [ddep_tag, ddis_tag, dciu_tag], ns_uri)
+                continue
+            dep_name, dis_name, ciu_name = names
+            ddep_el = _find_direct_child_ns(loc, ddep_tag, ns_uri)
+            if ddep_el is not None:
+                ddep_el.text = dep_name
+            ddis_el = _find_direct_child_ns(loc, ddis_tag, ns_uri)
+            if ddis_el is not None:
+                ddis_el.text = dis_name
+            dciu_el = _find_direct_child_ns(loc, dciu_tag, ns_uri)
+            if dciu_el is not None:
+                dciu_el.text = ciu_name
 
 def _xml_contains_nre_pricing(xml_text: str) -> bool:
     if not xml_text:
@@ -1340,6 +1366,85 @@ def _xml_contains_nre_pricing(xml_text: str) -> bool:
     if root.find(".//s:dPUniProSer", ns) is not None:
         return True
     return False
+
+def _norm_geo_code(value: str) -> int:
+    raw = str(value or "").strip()
+    raw = raw.lstrip("0") or "0"
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+@lru_cache(maxsize=1)
+def _load_geo_lookup() -> dict[tuple[int, int, int], tuple[str, str, str]]:
+    path = _repo_root() / "data" / "geo" / "geo_py_2025.csv"
+    lookup: dict[tuple[int, int, int], tuple[str, str, str]] = {}
+    if not path.exists():
+        return lookup
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            dep = _norm_geo_code(row.get("dep_code", ""))
+            dis = _norm_geo_code(row.get("dis_code", ""))
+            ciu = _norm_geo_code(row.get("ciu_code", ""))
+            if not (dep and dis and ciu):
+                continue
+            dep_name = (row.get("dep_name") or "").strip()
+            dis_name = (row.get("dis_name") or "").strip()
+            ciu_name = (row.get("ciu_name") or "").strip()
+            if not (dep_name and dis_name and ciu_name):
+                continue
+            lookup[(dep, dis, ciu)] = (dep_name, dis_name, ciu_name)
+    return lookup
+
+def _validate_nre_geo_descriptions(xml_root: ET.Element, ns: dict) -> list[str]:
+    errors: list[str] = []
+    lookup = _load_geo_lookup()
+
+    def _check_loc(
+        loc_tag: str,
+        dep_tag: str,
+        ddep_tag: str,
+        dis_tag: str,
+        ddis_tag: str,
+        ciu_tag: str,
+        dciu_tag: str,
+    ) -> None:
+        loc = xml_root.find(f".//s:gTransp/s:{loc_tag}", ns)
+        if loc is None:
+            return
+        dep_el = loc.find(f"s:{dep_tag}", ns)
+        dis_el = loc.find(f"s:{dis_tag}", ns)
+        ciu_el = loc.find(f"s:{ciu_tag}", ns)
+        dep = _norm_geo_code(dep_el.text if dep_el is not None else "")
+        dis = _norm_geo_code(dis_el.text if dis_el is not None else "")
+        ciu = _norm_geo_code(ciu_el.text if ciu_el is not None else "")
+        if not (dep and dis and ciu):
+            return
+        names = lookup.get((dep, dis, ciu)) if lookup else None
+        if not names:
+            errors.append(
+                f"NRE iTiDE=7 geo code not in official table: dep={dep} dis={dis} ciu={ciu}"
+            )
+            return
+        dep_name, dis_name, ciu_name = names
+        for tag, expected in [
+            (ddep_tag, dep_name),
+            (ddis_tag, dis_name),
+            (dciu_tag, ciu_name),
+        ]:
+            el = loc.find(f"s:{tag}", ns)
+            if el is None:
+                continue
+            actual = (el.text or "").strip()
+            if actual != expected:
+                errors.append(
+                    f"NRE iTiDE=7 geo description mismatch (SIFEN 2155): {tag} dep={dep} dis={dis} ciu={ciu} expected='{expected}' got='{actual}'"
+                )
+
+    _check_loc("gCamSal", "cDepSal", "dDesDepSal", "cDisSal", "dDesDisSal", "cCiuSal", "dDesCiuSal")
+    _check_loc("gCamEnt", "cDepEnt", "dDesDepEnt", "cDisEnt", "dDesDisEnt", "cCiuEnt", "dDesCiuEnt")
+    return errors
 
 def _fill_geo_desc_in(parent: Optional[ET.Element], code_tag: str, desc_tag: str, kind: str, ns_uri: str) -> None:
     if parent is None:
@@ -1898,9 +2003,6 @@ def _build_invoice_xml_from_template(
                 tel = loc.get("telefono")
                 if tel:
                     _ensure_child_ns(g, dtel, ns_uri).text = str(tel)
-
-                if doc_type == "7":
-                    _remove_children_ns(g, [ddep, ddis, dciu], ns_uri)
 
             if isinstance(transporte, dict):
                 _set_loc(transporte.get("salida") or transporte.get("gCamSal") or {}, "gCamSal")
@@ -5983,16 +6085,9 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
                 gop = gdg.find("s:gOpeCom", ns) if gdg is not None else None
                 if gop is not None:
                     abort(400, "iTiDE=7 no permite gOpeCom (SIFEN 1201).")
-                for path in [
-                    ".//s:gTransp/s:gCamSal/s:dDesDepSal",
-                    ".//s:gTransp/s:gCamSal/s:dDesDisSal",
-                    ".//s:gTransp/s:gCamSal/s:dDesCiuSal",
-                    ".//s:gTransp/s:gCamEnt/s:dDesDepEnt",
-                    ".//s:gTransp/s:gCamEnt/s:dDesDisEnt",
-                    ".//s:gTransp/s:gCamEnt/s:dDesCiuEnt",
-                ]:
-                    if xml_root.find(path, ns) is not None:
-                        abort(400, "NRE iTiDE=7 no permite dDes* en gCamSal/gCamEnt (SIFEN 1851)")
+                geo_errors = _validate_nre_geo_descriptions(xml_root, ns)
+                if geo_errors:
+                    abort(400, geo_errors[0])
             elif _xml_contains_nre_pricing(xml_text):
                 abort(400, "NRE iTiDE=7 no permite gValorItem (SIFEN 1851)")
 

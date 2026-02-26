@@ -4,12 +4,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+import xml.etree.ElementTree as ET
 
 from webui.app import (
     _build_invoice_xml_from_template,
     _default_template_path,
     _validate_rde_xsd_or_raise,
     _xml_contains_nre_pricing,
+    _validate_nre_geo_descriptions,
     sign_de_with_p12,
     _update_qr_in_signed_xml,
 )
@@ -96,8 +98,26 @@ def main() -> int:
     if _xml_contains_nre_pricing(signed_qr_text):
         print(f"ERROR: gValorItem/dPUniProSer presente en {out_path}", file=sys.stderr)
         return 1
+    try:
+        xml_root = ET.fromstring(signed_qr_text)
+    except ET.ParseError:
+        print(f"ERROR: XML firmado inválido en {out_path}", file=sys.stderr)
+        return 1
+    ns = {"s": "http://ekuatia.set.gov.py/sifen/xsd"}
+    geo_errors = _validate_nre_geo_descriptions(xml_root, ns)
+    if geo_errors:
+        print(f"ERROR: {geo_errors[0]}", file=sys.stderr)
+        return 1
+    for path in [
+        ".//s:gTransp/s:gCamSal/s:dDesCiuSal",
+        ".//s:gTransp/s:gCamEnt/s:dDesCiuEnt",
+    ]:
+        el = xml_root.find(path, ns)
+        if el is not None and (el.text or "").strip() == "CIUDAD":
+            print(f"ERROR: dDesCiu* placeholder CIUDAD en {out_path}", file=sys.stderr)
+            return 1
 
-    print(f"OK: no gValorItem ({out_path})")
+    print(f"OK: no gValorItem y geo OK ({out_path})")
     return 0
 
 

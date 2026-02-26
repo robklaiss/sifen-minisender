@@ -1366,6 +1366,10 @@ def _build_invoice_xml_from_template(
     if isinstance(issue_dt, str) and _SIFEN_TS_RE.fullmatch(issue_dt):
         dt = datetime.fromisoformat(issue_dt).replace(tzinfo=ZoneInfo("UTC"))
         issue_dt = dt.astimezone(ZoneInfo("America/Asuncion"))
+    if isinstance(issue_dt, datetime) and issue_dt.tzinfo is None:
+        issue_dt = issue_dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(
+            ZoneInfo("America/Asuncion")
+        )
     iso = _ensure_sifen_ts(sifen_timestamp(issue_dt), "build_invoice_xml")
     now = datetime.fromisoformat(iso)
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)

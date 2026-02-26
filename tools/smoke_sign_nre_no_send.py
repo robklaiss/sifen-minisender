@@ -106,7 +106,11 @@ def main() -> int:
         print(f"ERROR: template NRE no encontrado: {template_path}", file=sys.stderr)
         return 2
 
-    lookup = _load_geo_lookup()
+    try:
+        lookup = _load_geo_lookup()
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     if not lookup:
         print("ERROR: tabla geo oficial vacía o no disponible.", file=sys.stderr)
         return 1

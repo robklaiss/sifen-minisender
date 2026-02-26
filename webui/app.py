@@ -1353,10 +1353,14 @@ def _norm_geo_code(value: str) -> int:
 
 @lru_cache(maxsize=1)
 def _load_geo_lookup() -> dict[tuple[int, int, int], tuple[str, str, str]]:
-    path = _repo_root() / "data" / "geo" / "geo_py_2025.csv"
+    primary_path = Path("/data/geo/geo_py_2025.csv")
+    fallback_path = Path("/app/data/geo/geo_py_2025.csv")
+    path = primary_path if primary_path.exists() else fallback_path
     lookup: dict[tuple[int, int, int], tuple[str, str, str]] = {}
     if not path.exists():
-        return lookup
+        raise RuntimeError(
+            "no se encontró CSV geo en /data/geo/geo_py_2025.csv ni /app/data/geo/geo_py_2025.csv"
+        )
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:

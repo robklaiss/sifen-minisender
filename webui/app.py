@@ -2097,6 +2097,19 @@ def _build_invoice_xml_from_template(
                         )
                         _ensure_child_ns(g, dciu, ns_uri).text = ciu_desc[:30]
 
+                if dep_code and dis_code and ciu_code:
+                    names = _geo_lookup(dep_code, dis_code, ciu_code)
+                    if not names:
+                        loc_label = "salida" if tag == "gCamSal" else "entrega"
+                        raise RuntimeError(
+                            "geo lookup no encontrado para "
+                            f"{loc_label}: dep={dep_code} dis={dis_code} ciu={ciu_code}"
+                        )
+                    dep_name, dis_name, ciu_name = names
+                    _ensure_desc_after_code(g, cdep, ddep, dep_name, ns_uri)
+                    _ensure_desc_after_code(g, cdis, ddis, dis_name, ns_uri)
+                    _ensure_desc_after_code(g, cciu, dciu, ciu_name, ns_uri)
+
                 tel_default = nre_loc_defaults.get("telefono") if doc_type == "7" else ""
                 tel = _pick(("telefono", "tel"), tel_default)
                 if tel or doc_type == "7":
@@ -6183,6 +6196,13 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
                 gop = gdg.find("s:gOpeCom", ns) if gdg is not None else None
                 if gop is not None:
                     abort(400, "iTiDE=7 no permite gOpeCom (SIFEN 1201).")
+                for path in [
+                    ".//s:gTransp/s:gCamSal/s:dDesCiuSal",
+                    ".//s:gTransp/s:gCamEnt/s:dDesCiuEnt",
+                ]:
+                    el = xml_root.find(path, ns)
+                    if el is not None and (el.text or "").strip().upper() == "CIUDAD":
+                        abort(400, "NRE iTiDE=7 geo placeholder CIUDAD no permitido (SIFEN 2155)")
                 geo_errors = _validate_nre_geo_descriptions(xml_root, ns)
                 if geo_errors:
                     abort(400, geo_errors[0])

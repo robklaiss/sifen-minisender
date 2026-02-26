@@ -95,67 +95,21 @@ def _extract_loc_info(xml_root: ET.Element, loc_tag: str) -> dict:
         "ciu_desc": ciu_desc,
     }
 
-
-def main() -> int:
-    artifacts_root = Path("/data/artifacts")
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = artifacts_root / f"webui_dryrun_nre_{ts}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    template_path = _default_template_path("7")
-    if not template_path or not Path(template_path).exists():
-        print(f"ERROR: template NRE no encontrado: {template_path}", file=sys.stderr)
-        return 2
-
-    try:
-        lookup = _load_geo_lookup()
-    except RuntimeError as exc:
-        print(f"ERROR: loader geo: {exc}", file=sys.stderr)
-        return 1
-    info = getattr(webui_app, "_GEO_LOOKUP_INFO", {}) or {}
-    info_path = info.get("path")
-    info_rows = info.get("rows")
-    info_lines = info.get("lines")
-    if info_path:
-        if info_lines is not None:
-            print(f"geo_lookup: path={info_path} rows={info_rows} lines={info_lines}")
-        else:
-            print(f"geo_lookup: path={info_path} rows={info_rows}")
-    else:
-        print(f"geo_lookup: rows={len(lookup)}")
-    if not lookup:
-        print("ERROR: tabla geo oficial vacía o no disponible.", file=sys.stderr)
-        return 1
-
-    salida_geo = _pick_geo_entry(lookup, "CENTRAL")
-    entrega_geo = _pick_geo_entry(lookup, "CAPITAL")
-
-    salida = {
-        "departamento": str(salida_geo["dep"]),
-        "distrito": str(salida_geo["dis"]),
-        "ciudad": str(salida_geo["ciu"]),
-        "dirLoc": "Ruta 2 Km 21",
-        "numCasa": "0",
-        "tel": "021000000",
-    }
-    entrega = {
-        "departamento": str(entrega_geo["dep"]),
-        "distrito": str(entrega_geo["dis"]),
-        "ciudad": str(entrega_geo["ciu"]),
-        "dirLoc": "Av. Mariscal Lopez 123",
-        "numCasa": "123",
-        "tel": "021111111",
-    }
-
-    customer = {"name": "Cliente DryRun", "ruc": "1234567-8"}
-    lines = [
-        {
-            "qty": 1,
-            "price_unit": 1000,
-            "line_total": 1000,
-            "description": "Item prueba",
-        }
-    ]
+def _run_case(
+    *,
+    label: str,
+    salida: dict,
+    entrega: dict,
+    out_dir: Path,
+    template_path: str,
+    customer: dict,
+    lines: list,
+    p12_path: str,
+    p12_password: str,
+    csc: str,
+    csc_id: str,
+    out_name: str,
+) -> Path:
     extra_json = {
         "transporte": {
             "iTipTrans": "1",
@@ -193,52 +147,174 @@ def main() -> int:
     pre_xml = build["xml_bytes"]
     pre_text = pre_xml.decode("utf-8", errors="ignore")
     if _xml_contains_nre_pricing(pre_text):
-        print("ERROR: pre-sign contiene gValorItem/dPUniProSer", file=sys.stderr)
-        return 1
-    try:
-        _assert_geo_xml(pre_text, "pre-sign")
-    except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+        raise RuntimeError(f"{label}: pre-sign contiene gValorItem/dPUniProSer")
+    _assert_geo_xml(pre_text, f"{label}: pre-sign")
 
-    _validate_rde_xsd_or_raise(pre_xml, out_dir, "pre-sign rDE")
+    _validate_rde_xsd_or_raise(pre_xml, out_dir, f"{label}: pre-sign rDE")
 
-    p12_path = _env_or_fail("SIFEN_SIGN_P12_PATH", "SIFEN_P12_PATH", "SIFEN_CERT_PATH")
-    p12_password = _env_or_fail("SIFEN_SIGN_P12_PASSWORD", "SIFEN_P12_PASSWORD", "SIFEN_CERT_PASSWORD")
     signed_bytes = sign_de_with_p12(pre_xml, p12_path, p12_password)
 
-    csc = _env_or_fail("SIFEN_CSC")
-    csc_id = (os.getenv("SIFEN_CSC_ID") or "0001").strip()
-    signed_qr_text, _ = _update_qr_in_signed_xml(signed_bytes.decode("utf-8", errors="ignore"), csc, csc_id)
+    signed_qr_text, _ = _update_qr_in_signed_xml(
+        signed_bytes.decode("utf-8", errors="ignore"),
+        csc,
+        csc_id,
+    )
 
-    out_path = out_dir / "rde_signed_qr_TEST.xml"
+    out_path = out_dir / out_name
     out_path.write_text(signed_qr_text, encoding="utf-8")
 
     if _xml_contains_nre_pricing(signed_qr_text):
-        print(f"ERROR: gValorItem/dPUniProSer presente en {out_path}", file=sys.stderr)
-        return 1
-    try:
-        xml_root = _assert_geo_xml(signed_qr_text, "signed")
-    except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+        raise RuntimeError(f"{label}: gValorItem/dPUniProSer presente en {out_path}")
+    xml_root = _assert_geo_xml(signed_qr_text, f"{label}: signed")
 
     for tag in ["gOpeCom", "gCamCond", "gValorItem", "gTotSub"]:
         if xml_root.find(f".//s:{tag}", NS) is not None:
-            print(f"ERROR: tag prohibido <{tag}> presente en {out_path}", file=sys.stderr)
-            return 1
+            raise RuntimeError(f"{label}: tag prohibido <{tag}> presente en {out_path}")
 
-    sal_info = _extract_loc_info(xml_root, "gCamSal") or salida_geo
-    ent_info = _extract_loc_info(xml_root, "gCamEnt") or entrega_geo
+    sal_info = _extract_loc_info(xml_root, "gCamSal") or {}
+    ent_info = _extract_loc_info(xml_root, "gCamEnt") or {}
     print(
-        "OK: geo sal/ent "
+        f"OK ({label}): geo sal/ent "
         f"sal=dep={sal_info.get('dep')} dis={sal_info.get('dis')} ciu={sal_info.get('ciu')} "
         f"'{sal_info.get('dep_desc')}'/'{sal_info.get('dis_desc')}'/'{sal_info.get('ciu_desc')}' "
         f"ent=dep={ent_info.get('dep')} dis={ent_info.get('dis')} ciu={ent_info.get('ciu')} "
         f"'{ent_info.get('dep_desc')}'/'{ent_info.get('dis_desc')}'/'{ent_info.get('ciu_desc')}'"
     )
-    print(f"XML firmado: {out_path}")
+    print(f"XML firmado ({label}): {out_path}")
+    return out_path
+
+
+def main() -> int:
+    artifacts_root = Path("/data/artifacts")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = artifacts_root / f"webui_dryrun_nre_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    template_path = _default_template_path("7")
+    if not template_path or not Path(template_path).exists():
+        print(f"ERROR: template NRE no encontrado: {template_path}", file=sys.stderr)
+        return 2
+
+    try:
+        lookup = _load_geo_lookup()
+    except RuntimeError as exc:
+        print(f"ERROR: loader geo: {exc}", file=sys.stderr)
+        return 1
+    info = getattr(webui_app, "_GEO_LOOKUP_INFO", {}) or {}
+    info_path = info.get("path")
+    info_rows = info.get("rows")
+    info_lines = info.get("lines")
+    if info_path:
+        if info_lines is not None:
+            print(f"geo_lookup: path={info_path} rows={info_rows} lines={info_lines}")
+        else:
+            print(f"geo_lookup: path={info_path} rows={info_rows}")
+    else:
+        print(f"geo_lookup: rows={len(lookup)}")
+    if not lookup:
+        print("ERROR: tabla geo oficial vacía o no disponible.", file=sys.stderr)
+        return 1
+
+    customer = {"name": "Cliente DryRun", "ruc": "1234567-8"}
+    lines = [
+        {
+            "qty": 1,
+            "price_unit": 1000,
+            "line_total": 1000,
+            "description": "Item prueba",
+        }
+    ]
+
+    p12_path = _env_or_fail("SIFEN_SIGN_P12_PATH", "SIFEN_P12_PATH", "SIFEN_CERT_PATH")
+    p12_password = _env_or_fail("SIFEN_SIGN_P12_PASSWORD", "SIFEN_P12_PASSWORD", "SIFEN_CERT_PASSWORD")
+
+    csc = _env_or_fail("SIFEN_CSC")
+    csc_id = (os.getenv("SIFEN_CSC_ID") or "0001").strip()
+
+    salida_geo = _pick_geo_entry(lookup, "CENTRAL")
+    entrega_geo = _pick_geo_entry(lookup, "CAPITAL")
+
+    salida = {
+        "departamento": str(salida_geo["dep"]),
+        "distrito": str(salida_geo["dis"]),
+        "ciudad": str(salida_geo["ciu"]),
+        "dirLoc": "Ruta 2 Km 21",
+        "numCasa": "0",
+        "tel": "021000000",
+    }
+    entrega = {
+        "departamento": str(entrega_geo["dep"]),
+        "distrito": str(entrega_geo["dis"]),
+        "ciudad": str(entrega_geo["ciu"]),
+        "dirLoc": "Av. Mariscal Lopez 123",
+        "numCasa": "123",
+        "tel": "021111111",
+    }
+
+    try:
+        _run_case(
+            label="default",
+            salida=salida,
+            entrega=entrega,
+            out_dir=out_dir,
+            template_path=template_path,
+            customer=customer,
+            lines=lines,
+            p12_path=p12_path,
+            p12_password=p12_password,
+            csc=csc,
+            csc_id=csc_id,
+            out_name="rde_signed_qr_TEST.xml",
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    explicit_key = (12, 154, 5044)
+    explicit_names = lookup.get(explicit_key)
+    if not explicit_names:
+        print(
+            "ERROR: código geo 12/0154/05044 no encontrado en tabla oficial.",
+            file=sys.stderr,
+        )
+        return 1
+    salida_explicit = {
+        "departamento": "12",
+        "distrito": "0154",
+        "ciudad": "05044",
+        "dirLoc": "Ruta 2 Km 21",
+        "numCasa": "0",
+        "tel": "021000000",
+    }
+    entrega_explicit = {
+        "departamento": "12",
+        "distrito": "0154",
+        "ciudad": "05044",
+        "dirLoc": "Av. Mariscal Lopez 123",
+        "numCasa": "123",
+        "tel": "021111111",
+    }
+    try:
+        _run_case(
+            label="geo_12_0154_05044",
+            salida=salida_explicit,
+            entrega=entrega_explicit,
+            out_dir=out_dir,
+            template_path=template_path,
+            customer=customer,
+            lines=lines,
+            p12_path=p12_path,
+            p12_password=p12_password,
+            csc=csc,
+            csc_id=csc_id,
+            out_name="rde_signed_qr_TEST_12015405044.xml",
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
     return 0
+
 
 
 if __name__ == "__main__":

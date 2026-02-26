@@ -3444,8 +3444,13 @@ BASE_HTML = """
   <title>{{title}}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { padding: 24px; }
-    .brand-logo { height: 48px; width: auto; display: block; }
+    :root { --header-height: 72px; }
+    body { padding: 0; }
+    .page-container { padding-top: calc(var(--header-height) + 24px); padding-bottom: 24px; }
+    .app-navbar { background: #fff; border-bottom: 1px solid #e9ecef; }
+    .app-navbar .container { padding-top: 10px; padding-bottom: 10px; }
+    .brand-logo { height: 28px; width: auto; display: block; }
+    .brand-title { font-size: 1.1rem; font-weight: 600; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     .nowrap { white-space: nowrap; }
     .backup-toast {
@@ -3472,13 +3477,11 @@ BASE_HTML = """
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="d-flex justify-content-between align-items-center mb-3">
+  <nav class="navbar fixed-top app-navbar">
+    <div class="container d-flex justify-content-between align-items-center">
       <div class="d-flex align-items-center gap-3">
         <img src="{{ url_for('issuer_logo') }}" alt="Industria Feris" class="brand-logo" onerror="this.style.display='none'">
-        <div>
-          <h3 class="mb-0">Industria Feris - Facturación</h3>
-        </div>
+        <div class="brand-title">Industria Feris – Facturación</div>
       </div>
       <div class="d-flex gap-2">
         <a class="btn btn-outline-secondary" href="{{ url_for('invoices') }}" title="Inicio" aria-label="Inicio">
@@ -3492,9 +3495,10 @@ BASE_HTML = """
         <a class="btn btn-primary" href="{{ url_for('invoice_new') }}">Documento nuevo</a>
       </div>
     </div>
+  </nav>
 
+  <div class="container page-container">
     {{ body|safe }}
-
   </div>
   <div id="backup-toast" class="backup-toast"></div>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -3867,16 +3871,9 @@ def settings_page():
 
         default_path = autodetect_signed_rde_path()
 
-    return render_template_string("""
-    <!doctype html>
-    <html><head>
-      <meta charset="utf-8">
-      <title>Settings</title>
-      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
-      <style>.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;}</style>
-    </head>
-    <body class="p-4">
-      <div class="container" style="max-width: 980px;">
+    body = render_template_string(
+        """
+      <div class="mx-auto" style="max-width: 980px;">
         <h3>Settings</h3>
         <p class="text-muted">Configura plantillas base para emitir y el XML firmado por defecto si no hay uno específico.</p>
         <form method="post" class="card p-3">
@@ -3920,8 +3917,7 @@ def settings_page():
           <a href="{{ url_for('diagnostics_page') }}">Diagnósticos</a>
         </div>
       </div>
-    </body></html>
-    """,
+        """,
         default_path=default_path,
         template_path=template_path,
         template_factura=template_factura,
@@ -3939,12 +3935,13 @@ def settings_page():
         pun_cfg=pun_cfg,
         default_env=default_env,
     )
+    return render_template_string(BASE_HTML, title="Settings", db_path=DB_PATH, body=body)
 
 @app.route("/assets/issuer-logo")
 def issuer_logo():
     path = (os.getenv("SIFEN_ISSUER_LOGO_PATH") or "").strip()
     if not path:
-        path = str(_repo_root() / "temp" / "industria-feris-isotipo.jpg")
+        path = str(_repo_root() / "assets" / "industria-feris-isotipo.jpg")
     p = Path(path)
     if not p.is_absolute():
         p = (_repo_root() / p).resolve()

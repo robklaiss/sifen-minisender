@@ -4,10 +4,19 @@ Generador de XML para documentos electrónicos SIFEN v150
 Estructura correcta según XSD v150
 """
 from typing import Optional
-from datetime import datetime
 import hashlib
 import base64
+import re
 
+from app.sifen_client.utils import sifen_timestamp
+
+_SIFEN_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+
+
+def _ensure_sifen_ts(ts: str, context: str) -> str:
+    if not _SIFEN_TS_RE.fullmatch(ts):
+        raise ValueError(f"{context}: timestamp SIFEN inválido: {ts!r}")
+    return ts
 
 def generate_cdc(ruc: str, timbrado: str, establecimiento: str, punto_expedicion: str,
                  numero_documento: str, tipo_documento: str, fecha: str, monto: str, codseg: Optional[str] = None) -> str:
@@ -149,14 +158,19 @@ def create_rde_xml_v150(
     Returns:
         XML como string
     """
-    if fecha is None:
-        fecha = datetime.now().strftime("%Y-%m-%d")
-    if hora is None:
-        hora = datetime.now().strftime("%H:%M:%S")
-    
+    if fecha is None or hora is None:
+        ts = sifen_timestamp()
+    else:
+        # Normalizar fecha/hora al formato SIFEN sin offset
+        ts = sifen_timestamp(f"{fecha}T{hora}")
+
+    ts = _ensure_sifen_ts(ts, "create_rde_xml_v150")
+    fecha = ts[:10]
+    hora = ts[11:]
+
     # Fecha formato SIFEN: YYYY-MM-DDTHH:MM:SS
-    fecha_firma = f"{fecha}T{hora}"
-    fecha_emision = fecha_firma
+    fecha_firma = ts
+    fecha_emision = ts
     
     # Monto para CDC (simplificado)
     monto = "100000"

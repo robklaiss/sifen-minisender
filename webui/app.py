@@ -1363,14 +1363,25 @@ def _build_invoice_xml_from_template(
     _update_text(root, ".//s:gTimb/s:iTiDE", doc_type, ns)
     _update_text(root, ".//s:gTimb/s:dDesTiDE", doc_type_label(doc_type), ns)
 
-    if isinstance(issue_dt, str) and _SIFEN_TS_RE.fullmatch(issue_dt):
-        dt = datetime.fromisoformat(issue_dt).replace(tzinfo=ZoneInfo("UTC"))
-        issue_dt = dt.astimezone(ZoneInfo("America/Asuncion"))
-    if isinstance(issue_dt, datetime) and issue_dt.tzinfo is None:
-        issue_dt = issue_dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(
+    issue_dt_local = issue_dt
+    if isinstance(issue_dt_local, str):
+        issue_dt_local = issue_dt_local.strip()
+        if _SIFEN_TS_RE.fullmatch(issue_dt_local):
+            dt = datetime.fromisoformat(issue_dt_local).replace(tzinfo=ZoneInfo("UTC"))
+            issue_dt_local = dt.astimezone(ZoneInfo("America/Asuncion"))
+    if isinstance(issue_dt_local, datetime) and issue_dt_local.tzinfo is None:
+        issue_dt_local = issue_dt_local.replace(tzinfo=ZoneInfo("UTC")).astimezone(
             ZoneInfo("America/Asuncion")
         )
-    iso = _ensure_sifen_ts(sifen_timestamp(issue_dt), "build_invoice_xml")
+    try:
+        ts_skew = int(os.getenv("SIFEN_TS_SKEW_SECONDS", "0") or "0")
+    except ValueError:
+        ts_skew = 0
+    if ts_skew > 0:
+        if issue_dt_local is None:
+            issue_dt_local = datetime.now(ZoneInfo("America/Asuncion"))
+        issue_dt_local = issue_dt_local - timedelta(seconds=ts_skew)
+    iso = _ensure_sifen_ts(sifen_timestamp(issue_dt_local), "build_invoice_xml")
     now = datetime.fromisoformat(iso)
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)
     _update_text(root, ".//s:dFecFirma", iso, ns)
@@ -1443,7 +1454,9 @@ def _build_invoice_xml_from_template(
         raise RuntimeError("No se encontró <gDtipDE> en el XML base.")
     if doc_type != "1":
         _remove_child_ns(gdtip, "gCamFE", ns_uri)
-    if doc_type not in ("1", "4", "7"):
+    if doc_type == "7":
+        _remove_child_ns(gdtip, "gCamCond", ns_uri)
+    elif doc_type not in ("1", "4"):
         _remove_child_ns(gdtip, "gCamCond", ns_uri)
 
     # dInfoFisc obligatorio para Remisión
@@ -1910,7 +1923,8 @@ def _build_invoice_xml_from_template(
     iva_total_str = _fmt_decimal_places(iva_total, iva_places)
     cdc_total_str = _fmt_decimal_places(total, 0)
 
-    _update_text(root, ".//s:gDtipDE/s:gCamCond/s:gPaConEIni/s:dMonTiPag", total_str, ns)
+    if doc_type != "7":
+        _update_text(root, ".//s:gDtipDE/s:gCamCond/s:gPaConEIni/s:dMonTiPag", total_str, ns)
 
     if doc_type != "7":
         gtot = root.find(".//s:gTotSub", ns)
@@ -2053,6 +2067,10 @@ def _build_invoice_xml_from_template(
                 _ensure_child_ns(gcam, "dFecEmiDI", ns_uri).text = fec.split(" ")[0]
 
     normalize_gtotsub_order_v150(root, ns)
+
+    if str(doc_type).strip() == "7":
+        if root.find(".//s:gDtipDE/s:gCamCond", ns) is not None:
+            raise RuntimeError("iTiDE=7 no permite gCamCond (SIFEN 1501). Revisá template/defaults y regenerá el XML.")
 
     if (os.getenv("DEBUG_XSD_ORDER") or "").strip() == "1" and str(doc_type).strip() == "7":
         _debug_xsd_order(root, ns, ns_uri, "final_pre_sign")
@@ -5873,6 +5891,8 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
                 xml_root = None
             if xml_root is not None:
                 ns = {"s": "http://ekuatia.set.gov.py/sifen/xsd"}
+                if xml_root.find(".//s:gDtipDE/s:gCamCond", ns) is not None:
+                    abort(400, "iTiDE=7 no permite gCamCond (SIFEN 1501). Generá un XML sin condición de operación.")
                 gdg = xml_root.find(".//s:gDatGralOpe", ns)
                 gop = gdg.find("s:gOpeCom", ns) if gdg is not None else None
                 if gop is not None:

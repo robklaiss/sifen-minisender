@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import webui.app as webapp
+from app.sifen_client.xsd_validator import validate_rde_and_lote
 
 
 NS = {"s": "http://ekuatia.set.gov.py/sifen/xsd"}
@@ -134,3 +135,28 @@ def test_decimal_qty_totals_and_qr_update(app_ctx):
     updated, _ = webapp._update_qr_in_signed_xml(xml_text, "A62e367A738D1050E364D9680f9E4a79", "1")
     assert "TESTQRCODE" not in updated
     assert "cHashQR=" in updated
+
+
+def test_autofactura_gcam_order_and_xsd(app_ctx):
+    webapp.set_setting("timbrado_num", "18578288")
+    webapp.set_setting("timbrado_fe_ini", "2026-01-14")
+
+    out = _build("4", "0000004", datetime(2026, 2, 10, 10, 0, 0))
+    root = _parse(out["xml_bytes"])
+
+    dtip = root.find(".//s:DE/s:gDtipDE", NS)
+    assert dtip is not None
+    tags = [child.tag.split("}", 1)[1] if "}" in child.tag else child.tag for child in list(dtip)]
+
+    ae_idx = tags.index("gCamAE")
+    item_indices = [idx for idx, tag in enumerate(tags) if tag == "gCamItem"]
+    assert item_indices
+    assert ae_idx < item_indices[0]
+    if "gCamCond" in tags:
+        cond_idx = tags.index("gCamCond")
+        assert ae_idx < cond_idx
+
+    xsd_dir = webapp._repo_root() / "schemas_sifen"
+    if (xsd_dir / "siRecepDE_v150.xsd").exists():
+        result = validate_rde_and_lote(out["xml_bytes"], None, xsd_dir)
+        assert result["rde_ok"], f"XSD FAIL iTiDE=4: {result['rde_errors']}"

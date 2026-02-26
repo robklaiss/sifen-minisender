@@ -5746,31 +5746,37 @@ def send_sirecepde(xml_path: Path, env: str = "test", artifacts_dir: Optional[Pa
         print(f"   Payload XML total: {len(payload_xml.encode('utf-8'))} bytes ({len(payload_xml.encode('utf-8')) / 1024:.2f} KB)\n")
         
         # Validación XSD local (offline)
-        validate_xsd = os.getenv("SIFEN_VALIDATE_XSD", "")
+        validate_xsd = (os.getenv("SIFEN_VALIDATE_XSD", "") or "").strip()
         debug_soap = os.getenv("SIFEN_DEBUG_SOAP", "0") in ("1", "true", "True")
-        
-        # Por defecto: validar si SIFEN_DEBUG_SOAP=1, o si SIFEN_VALIDATE_XSD=1 explícitamente
-        should_validate = (
-            validate_xsd == "1" or
-            (validate_xsd != "0" and debug_soap)
-        )
+
+        # Por defecto: validar siempre salvo que SIFEN_VALIDATE_XSD=0
+        should_validate = validate_xsd != "0"
         
         if should_validate:
             # Determinar xsd_dir
             xsd_dir_env = os.getenv("SIFEN_XSD_DIR")
+            repo_root = Path(__file__).parent.parent
             if xsd_dir_env:
                 xsd_dir = Path(xsd_dir_env)
             else:
-                # Default: tesaka-cv/docs/set/ekuatia.set.gov.py/sifen/xsd
-                repo_root = Path(__file__).parent.parent
-                xsd_dir = repo_root / "docs" / "set" / "ekuatia.set.gov.py" / "sifen" / "xsd"
+                candidates = [
+                    repo_root / "schemas_sifen",
+                    repo_root / "docs" / "set" / "ekuatia.set.gov.py" / "sifen" / "xsd",
+                ]
+                xsd_dir = next((c for c in candidates if c.exists()), candidates[0])
             
             print("🧾 Validando rDE/lote contra XSD local...")
             print(f"   XSD dir: {xsd_dir}")
             
             if not xsd_dir.exists():
-                print(f"⚠️  WARNING: Directorio XSD no existe: {xsd_dir}")
-                print("   Omitiendo validación XSD. Configurar SIFEN_XSD_DIR o crear el directorio.")
+                msg = f"Directorio XSD no existe: {xsd_dir}"
+                print(f"❌ {msg}")
+                if artifacts_dir:
+                    artifacts_dir.joinpath("xsd_errors.txt").write_text(
+                        f"{msg}\n",
+                        encoding="utf-8"
+                    )
+                raise RuntimeError(msg)
             else:
                 validation_result = validate_rde_and_lote(
                     rde_signed_bytes=xml_bytes,
@@ -5814,6 +5820,25 @@ def send_sirecepde(xml_path: Path, env: str = "test", artifacts_dir: Optional[Pa
                         error_msg += f"\nErrores rDE: {len(validation_result['rde_errors'])}"
                     if validation_result["lote_errors"]:
                         error_msg += f"\nErrores lote: {len(validation_result['lote_errors'])}"
+
+                    if artifacts_dir:
+                        lines = [
+                            "Validación XSD falló.",
+                            f"xsd_dir={xsd_dir}",
+                            f"schema_rde={validation_result.get('schema_rde', '')}",
+                        ]
+                        if validation_result.get("schema_lote"):
+                            lines.append(f"schema_lote={validation_result.get('schema_lote')}")
+                        if validation_result.get("rde_errors"):
+                            lines.append("rde_errors:")
+                            lines.extend([f"- {e}" for e in validation_result["rde_errors"]])
+                        if validation_result.get("lote_errors"):
+                            lines.append("lote_errors:")
+                            lines.extend([f"- {e}" for e in validation_result["lote_errors"]])
+                        artifacts_dir.joinpath("xsd_errors.txt").write_text(
+                            "\n".join(lines) + "\n",
+                            encoding="utf-8"
+                        )
                     
                     # Guardar artifacts si debug está activo (incluso si PRECHECK falló)
                     if debug_soap and artifacts_dir:

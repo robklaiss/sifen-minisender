@@ -7,6 +7,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
 
+import webui.app as webui_app
 from webui.app import (
     _build_invoice_xml_from_template,
     _default_template_path,
@@ -109,8 +110,19 @@ def main() -> int:
     try:
         lookup = _load_geo_lookup()
     except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: loader geo: {exc}", file=sys.stderr)
         return 1
+    info = getattr(webui_app, "_GEO_LOOKUP_INFO", {}) or {}
+    info_path = info.get("path")
+    info_rows = info.get("rows")
+    info_lines = info.get("lines")
+    if info_path:
+        if info_lines is not None:
+            print(f"geo_lookup: path={info_path} rows={info_rows} lines={info_lines}")
+        else:
+            print(f"geo_lookup: path={info_path} rows={info_rows}")
+    else:
+        print(f"geo_lookup: rows={len(lookup)}")
     if not lookup:
         print("ERROR: tabla geo oficial vacía o no disponible.", file=sys.stderr)
         return 1

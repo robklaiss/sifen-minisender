@@ -1351,19 +1351,34 @@ def _norm_geo_code(value: str) -> int:
     except ValueError:
         return 0
 
+_GEO_LOOKUP_INFO: dict[str, object] = {}
+
 @lru_cache(maxsize=1)
 def _load_geo_lookup() -> dict[tuple[int, int, int], tuple[str, str, str]]:
-    primary_path = Path("/data/geo/geo_py_2025.csv")
-    fallback_path = Path("/app/data/geo/geo_py_2025.csv")
-    path = primary_path if primary_path.exists() else fallback_path
+    raw_env_path = (os.getenv("SIFEN_GEO_CSV_PATH") or "").strip()
+    candidates: list[Path] = []
+    if raw_env_path:
+        env_path = Path(raw_env_path).expanduser()
+        if not env_path.is_absolute():
+            env_path = (_repo_root() / env_path).resolve()
+        else:
+            env_path = env_path.resolve()
+        candidates.append(env_path)
+    candidates.append(Path("/data/geo/geo_py_2025.csv"))
+    candidates.append((_repo_root() / "data" / "geo" / "geo_py_2025.csv").resolve())
+
+    path = next((p for p in candidates if p.exists()), None)
     lookup: dict[tuple[int, int, int], tuple[str, str, str]] = {}
-    if not path.exists():
+    if path is None:
         raise RuntimeError(
-            "no se encontró CSV geo en /data/geo/geo_py_2025.csv ni /app/data/geo/geo_py_2025.csv"
+            "no se encontró CSV geo. paths probados: "
+            + ", ".join(str(p) for p in candidates)
         )
+    row_count = 0
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            row_count += 1
             dep = _norm_geo_code(row.get("dep_code", ""))
             dis = _norm_geo_code(row.get("dis_code", ""))
             ciu = _norm_geo_code(row.get("ciu_code", ""))
@@ -1375,6 +1390,20 @@ def _load_geo_lookup() -> dict[tuple[int, int, int], tuple[str, str, str]]:
             if not (dep_name and dis_name and ciu_name):
                 continue
             lookup[(dep, dis, ciu)] = (dep_name, dis_name, ciu_name)
+    if not lookup:
+        try:
+            with path.open("r", encoding="utf-8", newline="") as f:
+                line_count = sum(1 for _ in f)
+        except Exception:
+            line_count = None
+        detail = f"path={path} rows=0"
+        if line_count is not None:
+            detail += f" lines={line_count}"
+        raise RuntimeError(f"tabla geo oficial vacía o no disponible: {detail}")
+    _GEO_LOOKUP_INFO.clear()
+    _GEO_LOOKUP_INFO.update(
+        {"path": str(path), "rows": len(lookup), "lines": row_count + 1}
+    )
     return lookup
 
 def _geo_lookup(dep, dis, ciu) -> Optional[tuple[str, str, str]]:

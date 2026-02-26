@@ -6,7 +6,7 @@ desde el directorio local en lugar de URLs remotas.
 """
 import os
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any, Callable
 
 try:
     import lxml.etree as etree
@@ -205,7 +205,8 @@ def extract_element_as_doc(
 
 def find_xsd_declaring_global_element(
     xsd_dir: Path,
-    element_name: str
+    element_name: str,
+    name_predicate: Optional[Callable[[str], bool]] = None,
 ) -> Optional[Path]:
     """
     Busca un archivo XSD que declare un elemento global con el nombre dado.
@@ -224,6 +225,8 @@ def find_xsd_declaring_global_element(
     # Buscar en todos los .xsd
     candidates = []
     for xsd_file in xsd_dir.glob("*.xsd"):
+        if name_predicate and not name_predicate(xsd_file.name):
+            continue
         try:
             content = xsd_file.read_bytes()
             # Buscar patrón: <xs:element name="element_name"
@@ -242,6 +245,99 @@ def find_xsd_declaring_global_element(
         return si_recep_candidates[0]
     
     return candidates[0]
+
+
+def _xsd_declares_rde(path: Path) -> bool:
+    try:
+        content = path.read_bytes()
+    except Exception:
+        return False
+    pattern = b'<xs:element name="rDE"'
+    return pattern in content
+
+
+def _detect_rde_version(rde_doc_bytes: bytes) -> Optional[str]:
+    try:
+        root = etree.fromstring(rde_doc_bytes)
+    except Exception:
+        return None
+    el = root.find(f".//{{{SIFEN_NS}}}dVerFor")
+    if el is None:
+        try:
+            found = root.xpath("//*[local-name()='dVerFor']")
+            el = found[0] if found else None
+        except Exception:
+            el = None
+    if el is None or not el.text:
+        return None
+    text = el.text.strip()
+    return text if text.isdigit() else None
+
+
+def _select_rde_schema(xsd_dir: Path, rde_version: Optional[str], rde_xml_bytes: bytes) -> Tuple[Path, str]:
+    xsd_dir = Path(xsd_dir).resolve()
+    preferred_v150 = [
+        "siRecepDE_v150.xsd",
+        "siRecepRDE_v150.xsd",
+        "rDE_prevalidador_v150.xsd",
+        "siRecepDE_Ekuatiai_v150.xsd",
+        "siRecepRDE_Ekuatiai_v150.xsd",
+    ]
+    preferred_v141 = [
+        "siRecepDE_v141.xsd",
+    ]
+
+    def _first_existing(names: list[str]) -> Optional[Tuple[Path, str]]:
+        for name in names:
+            path = xsd_dir / name
+            if path.exists() and _xsd_declares_rde(path):
+                return path, f"preferido: {name}"
+        return None
+
+    def _find_versioned(version: str) -> Optional[Tuple[Path, str]]:
+        path = find_xsd_declaring_global_element(
+            xsd_dir,
+            "rDE",
+            name_predicate=lambda n: f"v{version}" in n.lower(),
+        )
+        if path is None:
+            return None
+        return path, f"v{version} por declaración global rDE: {path.name}"
+
+    if rde_version == "150":
+        # PRE-SIGN (sin ds:Signature): usar XSD de prevalidador v150 si está disponible.
+        # siRecepDE_v150.xsd suele exigir/validar orden de Signature -> NO aplica pre-firma.
+        if not _has_signature(rde_xml_bytes):
+            pre = xsd_dir / "rDE_prevalidador_v150.xsd"
+            if pre.exists() and _xsd_declares_rde(pre):
+                return pre, "rDE_prevalidador_v150 (pre-sign, sin Signature)"
+
+        found = _first_existing(preferred_v150) or _find_versioned("150")
+        if found:
+            return found
+        if _find_versioned("141"):
+            raise FileNotFoundError("XSD v150 requerido; encontrado solo v141")
+        raise FileNotFoundError("XSD v150 requerido; no se encontró esquema compatible")
+
+    if rde_version == "141":
+        found = _first_existing(preferred_v141) or _find_versioned("141")
+        if found:
+            return found
+        found_any = find_xsd_declaring_global_element(xsd_dir, "rDE")
+        if found_any:
+            return found_any, f"fallback por declaración global rDE: {found_any.name}"
+        raise FileNotFoundError("XSD v141 requerido; no se encontró esquema compatible")
+
+    found = _first_existing(preferred_v150) or _find_versioned("150")
+    if found:
+        return found[0], f"sin dVerFor: {found[1]}"
+    found = _first_existing(preferred_v141) or _find_versioned("141")
+    if found:
+        return found[0], f"sin dVerFor: {found[1]}"
+    found_any = find_xsd_declaring_global_element(xsd_dir, "rDE")
+    if found_any:
+        return found_any, f"sin dVerFor: fallback por declaración global rDE: {found_any.name}"
+    raise FileNotFoundError("No se encontró XSD para rDE en el directorio indicado")
 
 
 def validate_rde_and_lote(
@@ -270,6 +366,8 @@ def validate_rde_and_lote(
             "schema_rde": str (path),
             "schema_lote": Optional[str] (path),
             "warning": Optional[str],
+            "rde_version": Optional[str],
+            "schema_reason": Optional[str],
             "root_original": str (localname del root original),
             "extracted_rde_root": str (siempre "rDE")
         }
@@ -285,6 +383,8 @@ def validate_rde_and_lote(
         "schema_rde": "",
         "schema_lote": None,
         "warning": None,
+        "rde_version": None,
+        "schema_reason": None,
         "root_original": "",
         "extracted_rde_root": "rDE"
     }
@@ -305,18 +405,19 @@ def validate_rde_and_lote(
         result["rde_errors"] = [f"Error al extraer rDE del XML: {e}"]
         return result
     
-    # 2) Buscar XSD que declare elemento global "rDE"
-    schema_rde_path = find_xsd_declaring_global_element(xsd_dir, "rDE")
-    if schema_rde_path is None:
-        # Fallback a siRecepDE_v150.xsd si existe
-        schema_rde_path = xsd_dir / "siRecepDE_v150.xsd"
-        if not schema_rde_path.exists():
-            result["rde_errors"] = [
-                f"No se encontró XSD para rDE en {xsd_dir}. "
-                "Buscar siRecepDE_v150.xsd o archivo que declare elemento global 'rDE'."
-            ]
-            return result
-    
+    # 2) Detectar versión por dVerFor y seleccionar XSD
+    rde_version = _detect_rde_version(rde_doc_bytes)
+    result["rde_version"] = rde_version
+
+    try:
+        schema_rde_path, schema_reason = _select_rde_schema(xsd_dir, rde_version, rde_doc_bytes)
+    except Exception as e:
+        result["schema_reason"] = f"selección fallida: {e}"
+        result["rde_errors"] = [str(e)]
+        return result
+
+    result["schema_reason"] = schema_reason
+
     result["schema_rde"] = str(schema_rde_path)
     
     # 3) Validar rDE extraído
@@ -401,6 +502,10 @@ def validate_rde_and_lote(
     
     # Debug output
     if debug_enabled:
+        if result.get("rde_version"):
+            print(f"   RDE_VERSION={result['rde_version']}")
+        if result.get("schema_reason"):
+            print(f"   RDE_SCHEMA_REASON={result['schema_reason']}")
         print(f"   ROOT_ORIGINAL={result['root_original']}")
         print(f"   EXTRACTED_RDE_ROOT={result['extracted_rde_root']}")
         print(f"   RDE_SCHEMA={result['schema_rde']}")
@@ -411,3 +516,12 @@ def validate_rde_and_lote(
     
     return result
 
+
+def _has_signature(xml_bytes: bytes) -> bool:
+    """Detecta si el rDE ya contiene ds:Signature (post-firma)."""
+    try:
+        # búsqueda simple para evitar dependencias XML/NS aquí
+        txt = xml_bytes.decode("utf-8", errors="ignore")
+        return ("<ds:Signature" in txt) or (":Signature" in txt and "xmldsig" in txt)
+    except Exception:
+        return False

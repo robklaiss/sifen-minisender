@@ -1321,37 +1321,13 @@ def _strip_nre_forbidden_groups(root: ET.Element, ns: dict) -> None:
         return
     for item in gdtip.findall("s:gCamItem", ns) if ns else gdtip.findall("gCamItem"):
         _strip_nre_item_pricing(item, ns_uri)
-    lookup = _load_geo_lookup()
     for gtransp in de_node.findall(".//s:gTransp", ns) if ns else de_node.findall(".//gTransp"):
         for loc_tag, dep_tag, ddep_tag, dis_tag, ddis_tag, ciu_tag, dciu_tag in [
             ("gCamSal", "cDepSal", "dDesDepSal", "cDisSal", "dDesDisSal", "cCiuSal", "dDesCiuSal"),
             ("gCamEnt", "cDepEnt", "dDesDepEnt", "cDisEnt", "dDesDisEnt", "cCiuEnt", "dDesCiuEnt"),
         ]:
             loc = gtransp.find(f"s:{loc_tag}", ns) if ns else gtransp.find(loc_tag)
-            if loc is None:
-                continue
-            dep_el = _find_direct_child_ns(loc, dep_tag, ns_uri)
-            dis_el = _find_direct_child_ns(loc, dis_tag, ns_uri)
-            ciu_el = _find_direct_child_ns(loc, ciu_tag, ns_uri)
-            dep = _norm_geo_code(dep_el.text if dep_el is not None else "")
-            dis = _norm_geo_code(dis_el.text if dis_el is not None else "")
-            ciu = _norm_geo_code(ciu_el.text if ciu_el is not None else "")
-            if not (dep and dis and ciu):
-                continue
-            names = lookup.get((dep, dis, ciu)) if lookup else None
-            if not names:
-                _remove_children_ns(loc, [ddep_tag, ddis_tag, dciu_tag], ns_uri)
-                continue
-            dep_name, dis_name, ciu_name = names
-            ddep_el = _find_direct_child_ns(loc, ddep_tag, ns_uri)
-            if ddep_el is not None:
-                ddep_el.text = dep_name
-            ddis_el = _find_direct_child_ns(loc, ddis_tag, ns_uri)
-            if ddis_el is not None:
-                ddis_el.text = dis_name
-            dciu_el = _find_direct_child_ns(loc, dciu_tag, ns_uri)
-            if dciu_el is not None:
-                dciu_el.text = ciu_name
+            _apply_geo_desc(loc, dep_tag, dis_tag, ciu_tag, ddep_tag, ddis_tag, dciu_tag, ns_uri)
 
 def _xml_contains_nre_pricing(xml_text: str) -> bool:
     if not xml_text:
@@ -1397,9 +1373,76 @@ def _load_geo_lookup() -> dict[tuple[int, int, int], tuple[str, str, str]]:
             lookup[(dep, dis, ciu)] = (dep_name, dis_name, ciu_name)
     return lookup
 
+def _geo_lookup(dep, dis, ciu) -> Optional[tuple[str, str, str]]:
+    lookup = _load_geo_lookup()
+    dep_code = _norm_geo_code(dep)
+    dis_code = _norm_geo_code(dis)
+    ciu_code = _norm_geo_code(ciu)
+    if not (dep_code and dis_code and ciu_code):
+        return None
+    return lookup.get((dep_code, dis_code, ciu_code)) if lookup else None
+
+def _ensure_desc_after_code(
+    loc: ET.Element,
+    code_tag: str,
+    desc_tag: str,
+    value: str,
+    ns_uri: str,
+) -> None:
+    code_el = _find_direct_child_ns(loc, code_tag, ns_uri)
+    if code_el is None:
+        return
+    desc_el = _find_direct_child_ns(loc, desc_tag, ns_uri)
+    if desc_el is None:
+        desc_el = ET.Element(f"{{{ns_uri}}}{desc_tag}")
+        children = list(loc)
+        if code_el in children:
+            loc.insert(children.index(code_el) + 1, desc_el)
+        else:
+            loc.append(desc_el)
+    else:
+        children = list(loc)
+        if code_el in children and desc_el in children:
+            expected_idx = children.index(code_el) + 1
+            if children.index(desc_el) != expected_idx:
+                loc.remove(desc_el)
+                children = list(loc)
+                loc.insert(children.index(code_el) + 1, desc_el)
+    desc_el.text = value
+
+def _apply_geo_desc(
+    loc: Optional[ET.Element],
+    dep_tag: str,
+    dis_tag: str,
+    ciu_tag: str,
+    ddep_tag: str,
+    ddis_tag: str,
+    dciu_tag: str,
+    ns_uri: str,
+) -> None:
+    if loc is None:
+        return
+    dep_el = _find_direct_child_ns(loc, dep_tag, ns_uri)
+    dis_el = _find_direct_child_ns(loc, dis_tag, ns_uri)
+    ciu_el = _find_direct_child_ns(loc, ciu_tag, ns_uri)
+    dep = _norm_geo_code(dep_el.text if dep_el is not None else "")
+    dis = _norm_geo_code(dis_el.text if dis_el is not None else "")
+    ciu = _norm_geo_code(ciu_el.text if ciu_el is not None else "")
+    if not (dep and dis and ciu):
+        return
+    names = _geo_lookup(dep, dis, ciu)
+    if not names:
+        raise RuntimeError(
+            "NRE iTiDE=7 geo code not in official table (SIFEN 2155 prevention): "
+            f"dep={dep} dis={dis} ciu={ciu}"
+        )
+    dep_name, dis_name, ciu_name = names
+    _ensure_desc_after_code(loc, dep_tag, ddep_tag, dep_name, ns_uri)
+    _ensure_desc_after_code(loc, dis_tag, ddis_tag, dis_name, ns_uri)
+    _ensure_desc_after_code(loc, ciu_tag, dciu_tag, ciu_name, ns_uri)
+
 def _validate_nre_geo_descriptions(xml_root: ET.Element, ns: dict) -> list[str]:
     errors: list[str] = []
-    lookup = _load_geo_lookup()
 
     def _check_loc(
         loc_tag: str,
@@ -1421,10 +1464,11 @@ def _validate_nre_geo_descriptions(xml_root: ET.Element, ns: dict) -> list[str]:
         ciu = _norm_geo_code(ciu_el.text if ciu_el is not None else "")
         if not (dep and dis and ciu):
             return
-        names = lookup.get((dep, dis, ciu)) if lookup else None
+        names = _geo_lookup(dep, dis, ciu)
         if not names:
             errors.append(
-                f"NRE iTiDE=7 geo code not in official table: dep={dep} dis={dis} ciu={ciu}"
+                "NRE iTiDE=7 geo code not in official table (SIFEN 2155 prevention): "
+                f"dep={dep} dis={dis} ciu={ciu}"
             )
             return
         dep_name, dis_name, ciu_name = names
@@ -1434,9 +1478,7 @@ def _validate_nre_geo_descriptions(xml_root: ET.Element, ns: dict) -> list[str]:
             (dciu_tag, ciu_name),
         ]:
             el = loc.find(f"s:{tag}", ns)
-            if el is None:
-                continue
-            actual = (el.text or "").strip()
+            actual = (el.text or "").strip() if el is not None else ""
             if actual != expected:
                 errors.append(
                     f"NRE iTiDE=7 geo description mismatch (SIFEN 2155): {tag} dep={dep} dis={dis} ciu={ciu} expected='{expected}' got='{actual}'"
@@ -1793,6 +1835,17 @@ def _build_invoice_xml_from_template(
     base_places = _infer_places_from_xpath(base_item, "s:gCamIVA/s:dBasGravIVA", ns, 4)
     iva_places = _infer_places_from_xpath(base_item, "s:gCamIVA/s:dLiqIVAItem", ns, 4)
 
+    nre_loc_defaults: dict[str, str] = {}
+    if doc_type == "7":
+        nre_loc_defaults = {
+            "direccion": _text(".//s:gEmis/s:dDirEmi") or "S/D",
+            "numCasa": _text(".//s:gEmis/s:dNumCas") or "0",
+            "departamento": _text(".//s:gEmis/s:cDepEmi"),
+            "distrito": _text(".//s:gEmis/s:cDisEmi"),
+            "ciudad": _text(".//s:gEmis/s:cCiuEmi"),
+            "telefono": _text(".//s:gEmis/s:dTelEmi") or "0",
+        }
+
     total = Decimal("0")
     sub_exe = Decimal("0")
     sub_exo = Decimal("0")
@@ -1929,8 +1982,17 @@ def _build_invoice_xml_from_template(
                 _ensure_child_ns(gtransp, "dFinTras", ns_uri).text = str(fin).split(" ")[0]
 
             def _set_loc(loc: dict, tag: str) -> None:
-                if not loc:
+                if not loc and doc_type != "7":
                     return
+                loc = loc or {}
+
+                def _pick(keys: tuple[str, ...], default: str = "") -> str:
+                    for key in keys:
+                        val = loc.get(key)
+                        if val is not None and str(val).strip():
+                            return str(val)
+                    return default
+
                 g = _ensure_child_ns(gtransp, tag, ns_uri)
                 if tag == "gCamSal":
                     ddir = "dDirLocSal"
@@ -1957,8 +2019,10 @@ def _build_invoice_xml_from_template(
                     dciu = "dDesCiuEnt"
                     dtel = "dTelEnt"
 
-                _ensure_child_ns(g, ddir, ns_uri).text = str(loc.get("direccion") or loc.get("dir") or "S/D")
-                _ensure_child_ns(g, dnum, ns_uri).text = str(loc.get("numCasa") or loc.get("numero") or "0")
+                addr_default = nre_loc_defaults.get("direccion") if doc_type == "7" else "S/D"
+                num_default = nre_loc_defaults.get("numCasa") if doc_type == "7" else "0"
+                _ensure_child_ns(g, ddir, ns_uri).text = _pick(("direccion", "dir", "dirLoc"), addr_default)
+                _ensure_child_ns(g, dnum, ns_uri).text = _pick(("numCasa", "numero", "num"), num_default)
                 comp1 = loc.get("comp1") or loc.get("complemento1")
                 comp2 = loc.get("comp2") or loc.get("complemento2")
                 if comp1:
@@ -1966,7 +2030,7 @@ def _build_invoice_xml_from_template(
                 if comp2:
                     _ensure_child_ns(g, dcomp2, ns_uri).text = str(comp2)
 
-                dep = loc.get("departamento")
+                dep = _pick(("departamento", "dep"), nre_loc_defaults.get("departamento", "") if doc_type == "7" else "")
                 dep_code = _zfill_digits(dep, 2) if dep is not None else ""
                 if dep_code:
                     _ensure_child_ns(g, cdep, ns_uri).text = dep_code
@@ -1979,7 +2043,7 @@ def _build_invoice_xml_from_template(
                         if dep_desc:
                             _ensure_child_ns(g, ddep, ns_uri).text = dep_desc
 
-                dis = loc.get("distrito")
+                dis = _pick(("distrito", "dis"), nre_loc_defaults.get("distrito", "") if doc_type == "7" else "")
                 dis_code = _zfill_digits(dis, 4) if dis is not None else ""
                 if dis_code:
                     _ensure_child_ns(g, cdis, ns_uri).text = dis_code
@@ -1988,7 +2052,7 @@ def _build_invoice_xml_from_template(
                         if dis_desc:
                             _ensure_child_ns(g, ddis, ns_uri).text = dis_desc
 
-                ciu = loc.get("ciudad")
+                ciu = _pick(("ciudad", "ciu"), nre_loc_defaults.get("ciudad", "") if doc_type == "7" else "")
                 ciu_code = _zfill_digits(ciu, 5) if ciu is not None else ""
                 if ciu_code:
                     _ensure_child_ns(g, cciu, ns_uri).text = ciu_code
@@ -2000,9 +2064,10 @@ def _build_invoice_xml_from_template(
                         )
                         _ensure_child_ns(g, dciu, ns_uri).text = ciu_desc[:30]
 
-                tel = loc.get("telefono")
-                if tel:
-                    _ensure_child_ns(g, dtel, ns_uri).text = str(tel)
+                tel_default = nre_loc_defaults.get("telefono") if doc_type == "7" else ""
+                tel = _pick(("telefono", "tel"), tel_default)
+                if tel or doc_type == "7":
+                    _ensure_child_ns(g, dtel, ns_uri).text = str(tel or "0")
 
             if isinstance(transporte, dict):
                 _set_loc(transporte.get("salida") or transporte.get("gCamSal") or {}, "gCamSal")

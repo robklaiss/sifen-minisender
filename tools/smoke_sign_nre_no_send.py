@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import copy
 import os
 import sys
 from datetime import datetime
@@ -10,7 +9,6 @@ import xml.etree.ElementTree as ET
 
 from webui.app import (
     _build_invoice_xml_from_template,
-    _default_extra_json_for,
     _default_template_path,
     _load_geo_lookup,
     _norm_geo_code,
@@ -33,117 +31,45 @@ def _env_or_fail(*keys: str) -> str:
             return val
     raise RuntimeError(f"Falta {' o '.join(keys)} en el entorno.")
 
-
-def _first_transport(extra_json: dict) -> dict:
-    transporte = extra_json.get("transporte")
-    if isinstance(transporte, list):
-        return transporte[0] if transporte else {}
-    if isinstance(transporte, dict):
-        return transporte
-    return {}
-
-
-def _load_default_transport_or_fail() -> dict:
-    extra = _default_extra_json_for("7") or {}
-    if not isinstance(extra, dict):
-        extra = {}
-    transporte = _first_transport(extra)
-    if not isinstance(transporte, dict) or not transporte:
-        raise RuntimeError(
-            "No se encontró transporte default en json-ejemplos-tipos-de-factura/data2.1.json (remision)."
-        )
-    return copy.deepcopy(transporte)
+def _pick_geo_entry(lookup: dict, dep_name: Optional[str] = None) -> dict:
+    for (dep, dis, ciu), (dep_desc, dis_desc, ciu_desc) in lookup.items():
+        if dep_name is None or dep_desc == dep_name:
+            return {
+                "dep": dep,
+                "dis": dis,
+                "ciu": ciu,
+                "dep_desc": dep_desc,
+                "dis_desc": dis_desc,
+                "ciu_desc": ciu_desc,
+            }
+    if dep_name is not None:
+        return _pick_geo_entry(lookup, None)
+    raise RuntimeError("Tabla geo oficial vacía o sin entradas válidas.")
 
 
-def _find_direct_child_ns(parent: ET.Element, tag: str, ns_uri: str) -> Optional[ET.Element]:
-    target = f"{{{ns_uri}}}{tag}"
-    for child in list(parent):
-        if child.tag == target:
-            return child
-    return None
-
-
-def _ensure_desc_after_code(
-    loc: ET.Element,
-    code_tag: str,
-    desc_tag: str,
-    value: str,
-    ns_uri: str,
-) -> None:
-    code_el = _find_direct_child_ns(loc, code_tag, ns_uri)
-    if code_el is None:
-        raise RuntimeError(f"Falta {code_tag} en {loc.tag}.")
-    desc_el = _find_direct_child_ns(loc, desc_tag, ns_uri)
-    if desc_el is None:
-        desc_el = ET.Element(f"{{{ns_uri}}}{desc_tag}")
-        children = list(loc)
-        if code_el in children:
-            loc.insert(children.index(code_el) + 1, desc_el)
-        else:
-            loc.append(desc_el)
-    desc_el.text = value
-
-
-def _require_text(loc: ET.Element, tag: str, ns_uri: str, label: str) -> str:
-    el = _find_direct_child_ns(loc, tag, ns_uri)
-    if el is None:
-        raise RuntimeError(f"NRE {label}: falta {tag}.")
-    text = (el.text or "").strip()
-    if not text:
-        raise RuntimeError(f"NRE {label}: {tag} vacío.")
-    return text
-
-
-def _ensure_nre_geo_blocks(pre_xml: bytes, lookup: dict) -> tuple[bytes, dict]:
+def _assert_geo_xml(xml_text: str, label: str) -> ET.Element:
     try:
-        root = ET.fromstring(pre_xml)
+        root = ET.fromstring(xml_text)
     except ET.ParseError as exc:
-        raise RuntimeError(f"XML pre-sign inválido: {exc}")
+        raise RuntimeError(f"{label}: XML inválido ({exc})")
 
-    info: dict[str, dict] = {}
-    for loc_tag, dep_tag, ddep_tag, dis_tag, ddis_tag, ciu_tag, dciu_tag, ddir_tag, dnum_tag, dtel_tag in [
-        ("gCamSal", "cDepSal", "dDesDepSal", "cDisSal", "dDesDisSal", "cCiuSal", "dDesCiuSal", "dDirLocSal", "dNumCasSal", "dTelSal"),
-        ("gCamEnt", "cDepEnt", "dDesDepEnt", "cDisEnt", "dDesDisEnt", "cCiuEnt", "dDesCiuEnt", "dDirLocEnt", "dNumCasEnt", "dTelEnt"),
+    for loc_tag in ["gCamSal", "gCamEnt"]:
+        if root.find(f".//s:gTransp/s:{loc_tag}", NS) is None:
+            raise RuntimeError(f"{label}: falta gTransp/{loc_tag}.")
+
+    geo_errors = _validate_nre_geo_descriptions(root, NS)
+    if geo_errors:
+        raise RuntimeError(f"{label}: {geo_errors[0]}")
+
+    for path in [
+        ".//s:gTransp/s:gCamSal/s:dDesCiuSal",
+        ".//s:gTransp/s:gCamEnt/s:dDesCiuEnt",
     ]:
-        loc = root.find(f".//s:gTransp/s:{loc_tag}", NS)
-        if loc is None:
-            raise RuntimeError(f"Falta gTransp/{loc_tag} en NRE.")
+        el = root.find(path, NS)
+        if el is not None and (el.text or "").strip() == "CIUDAD":
+            raise RuntimeError(f"{label}: dDesCiu* placeholder CIUDAD.")
 
-        _require_text(loc, ddir_tag, NS_URI, loc_tag)
-        _require_text(loc, dnum_tag, NS_URI, loc_tag)
-        dep_text = _require_text(loc, dep_tag, NS_URI, loc_tag)
-        dis_text = _require_text(loc, dis_tag, NS_URI, loc_tag)
-        ciu_text = _require_text(loc, ciu_tag, NS_URI, loc_tag)
-        _require_text(loc, dtel_tag, NS_URI, loc_tag)
-
-        dep = _norm_geo_code(dep_text)
-        dis = _norm_geo_code(dis_text)
-        ciu = _norm_geo_code(ciu_text)
-        if not (dep and dis and ciu):
-            raise RuntimeError(
-                f"NRE {loc_tag}: dep/dis/ciu inválidos dep={dep_text!r} dis={dis_text!r} ciu={ciu_text!r}."
-            )
-        names = lookup.get((dep, dis, ciu)) if lookup else None
-        if not names:
-            raise RuntimeError(
-                f"NRE iTiDE=7 geo code not in official table: dep={dep} dis={dis} ciu={ciu}"
-            )
-        dep_name, dis_name, ciu_name = names
-
-        _ensure_desc_after_code(loc, dep_tag, ddep_tag, dep_name, NS_URI)
-        _ensure_desc_after_code(loc, dis_tag, ddis_tag, dis_name, NS_URI)
-        _ensure_desc_after_code(loc, ciu_tag, dciu_tag, ciu_name, NS_URI)
-
-        info[loc_tag] = {
-            "dep": dep,
-            "dis": dis,
-            "ciu": ciu,
-            "dep_desc": dep_name,
-            "dis_desc": dis_name,
-            "ciu_desc": ciu_name,
-        }
-
-    return ET.tostring(root, encoding="utf-8", method="xml"), info
+    return root
 
 
 def _extract_loc_info(xml_root: ET.Element, loc_tag: str) -> dict:
@@ -185,26 +111,25 @@ def main() -> int:
         print("ERROR: tabla geo oficial vacía o no disponible.", file=sys.stderr)
         return 1
 
-    default_transporte = _load_default_transport_or_fail()
-    salida = default_transporte.get("salida") or {}
-    entrega = default_transporte.get("entrega") or {}
-    if not isinstance(salida, dict) or not salida:
-        print("ERROR: transporte default sin salida.", file=sys.stderr)
-        return 1
-    if not isinstance(entrega, dict) or not entrega:
-        print("ERROR: transporte default sin entrega.", file=sys.stderr)
-        return 1
-    for loc, label in [(salida, "salida"), (entrega, "entrega")]:
-        if not str(loc.get("direccion") or "").strip():
-            loc["direccion"] = "S/D"
-        if not str(loc.get("numCasa") or "").strip():
-            loc["numCasa"] = "0"
-        if not str(loc.get("telefono") or "").strip():
-            loc["telefono"] = "0"
-        for key in ("departamento", "distrito", "ciudad"):
-            if not str(loc.get(key) or "").strip():
-                print(f"ERROR: transporte {label} sin {key}.", file=sys.stderr)
-                return 1
+    salida_geo = _pick_geo_entry(lookup, "CENTRAL")
+    entrega_geo = _pick_geo_entry(lookup, "CAPITAL")
+
+    salida = {
+        "departamento": str(salida_geo["dep"]),
+        "distrito": str(salida_geo["dis"]),
+        "ciudad": str(salida_geo["ciu"]),
+        "dirLoc": "Ruta 2 Km 21",
+        "numCasa": "0",
+        "tel": "021000000",
+    }
+    entrega = {
+        "departamento": str(entrega_geo["dep"]),
+        "distrito": str(entrega_geo["dis"]),
+        "ciudad": str(entrega_geo["ciu"]),
+        "dirLoc": "Av. Mariscal Lopez 123",
+        "numCasa": "123",
+        "tel": "021111111",
+    }
 
     customer = {"name": "Cliente DryRun", "ruc": "1234567-8"}
     lines = [
@@ -218,12 +143,13 @@ def main() -> int:
     extra_json = {
         "transporte": {
             "iTipTrans": "1",
+            "iModTrans": "1",
             "iRespFlete": "1",
             "salida": salida,
             "entrega": entrega,
-            "transportista": default_transporte.get("transportista") or {
+            "transportista": {
                 "tipo": "1",
-                "ruc": "1234567-8",
+                "numeroTr": "1234567-8",
                 "direccionTr": "S/D",
                 "nombre": "Transportista",
                 "numeroCh": "1",
@@ -249,15 +175,14 @@ def main() -> int:
     )
 
     pre_xml = build["xml_bytes"]
-    try:
-        pre_xml, geo_info = _ensure_nre_geo_blocks(pre_xml, lookup)
-    except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-
     pre_text = pre_xml.decode("utf-8", errors="ignore")
     if _xml_contains_nre_pricing(pre_text):
         print("ERROR: pre-sign contiene gValorItem/dPUniProSer", file=sys.stderr)
+        return 1
+    try:
+        _assert_geo_xml(pre_text, "pre-sign")
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     _validate_rde_xsd_or_raise(pre_xml, out_dir, "pre-sign rDE")
@@ -277,9 +202,9 @@ def main() -> int:
         print(f"ERROR: gValorItem/dPUniProSer presente en {out_path}", file=sys.stderr)
         return 1
     try:
-        xml_root = ET.fromstring(signed_qr_text)
-    except ET.ParseError:
-        print(f"ERROR: XML firmado inválido en {out_path}", file=sys.stderr)
+        xml_root = _assert_geo_xml(signed_qr_text, "signed")
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     for tag in ["gOpeCom", "gCamCond", "gValorItem", "gTotSub"]:
@@ -287,26 +212,8 @@ def main() -> int:
             print(f"ERROR: tag prohibido <{tag}> presente en {out_path}", file=sys.stderr)
             return 1
 
-    for loc_tag in ["gCamSal", "gCamEnt"]:
-        if xml_root.find(f".//s:gTransp/s:{loc_tag}", NS) is None:
-            print(f"ERROR: falta gTransp/{loc_tag} en {out_path}", file=sys.stderr)
-            return 1
-
-    geo_errors = _validate_nre_geo_descriptions(xml_root, NS)
-    if geo_errors:
-        print(f"ERROR: {geo_errors[0]}", file=sys.stderr)
-        return 1
-    for path in [
-        ".//s:gTransp/s:gCamSal/s:dDesCiuSal",
-        ".//s:gTransp/s:gCamEnt/s:dDesCiuEnt",
-    ]:
-        el = xml_root.find(path, NS)
-        if el is not None and (el.text or "").strip() == "CIUDAD":
-            print(f"ERROR: dDesCiu* placeholder CIUDAD en {out_path}", file=sys.stderr)
-            return 1
-
-    sal_info = _extract_loc_info(xml_root, "gCamSal") or geo_info.get("gCamSal", {})
-    ent_info = _extract_loc_info(xml_root, "gCamEnt") or geo_info.get("gCamEnt", {})
+    sal_info = _extract_loc_info(xml_root, "gCamSal") or salida_geo
+    ent_info = _extract_loc_info(xml_root, "gCamEnt") or entrega_geo
     print(
         "OK: geo sal/ent "
         f"sal=dep={sal_info.get('dep')} dis={sal_info.get('dis')} ciu={sal_info.get('ciu')} "

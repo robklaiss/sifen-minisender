@@ -1954,6 +1954,11 @@ def _build_invoice_xml_from_template(
         _ensure_dis_dep_order_v150(root, ns, ns_uri)
         if (os.getenv("DEBUG_XSD_ORDER") or "").strip() == "1":
             _debug_xsd_order(root, ns, ns_uri, "after_dep_dis")
+        de_node = root.find(".//s:DE", ns)
+        gdtip = de_node.find("s:gDtipDE", ns) if de_node is not None else None
+        if gdtip is not None:
+            for item in gdtip.findall("s:gCamItem", ns):
+                _strip_nre_item_pricing(item, ns_uri)
 
     iva_total = iva5 + iva10
     total_str = _fmt_decimal_places(total, money_places_default)
@@ -5877,6 +5882,11 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
         in_path = base_dir / f"rde_input_{build['dnumdoc']}.xml"
         in_path.write_bytes(build["xml_bytes"])
 
+        if doc_type == "7":
+            xml_text_pre = build["xml_bytes"].decode("utf-8", errors="ignore")
+            if _xml_contains_nre_pricing(xml_text_pre):
+                abort(400, "NRE iTiDE=7 no permite gValorItem (SIFEN 1851)")
+
         # Validación estricta de timestamps pre-firma
         _validate_xml_timestamps_or_raise(build["xml_bytes"], base_dir, "pre-sign rDE")
 
@@ -5893,7 +5903,7 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
         if doc_type == "7":
             signed_text = signed_bytes.decode("utf-8", errors="ignore")
             if _xml_contains_nre_pricing(signed_text):
-                abort(400, "NRE no permite gValorItem (SIFEN 1851)")
+                abort(400, "NRE iTiDE=7 no permite gValorItem (SIFEN 1851)")
         signed_path = base_dir / f"rde_signed_{build['dnumdoc']}.xml"
         signed_path.write_bytes(signed_bytes)
 
@@ -5934,7 +5944,7 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
             if xml_root is not None:
                 ns = {"s": "http://ekuatia.set.gov.py/sifen/xsd"}
                 if xml_root.find(".//s:gValorItem", ns) is not None or xml_root.find(".//s:dPUniProSer", ns) is not None:
-                    abort(400, "NRE no permite gValorItem (SIFEN 1851)")
+                    abort(400, "NRE iTiDE=7 no permite gValorItem (SIFEN 1851)")
                 if xml_root.find(".//s:gDtipDE/s:gCamCond", ns) is not None:
                     abort(400, "iTiDE=7 no permite gCamCond (SIFEN 1501). Generá un XML sin condición de operación.")
                 gdg = xml_root.find(".//s:gDatGralOpe", ns)
@@ -5942,7 +5952,7 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
                 if gop is not None:
                     abort(400, "iTiDE=7 no permite gOpeCom (SIFEN 1201).")
             elif _xml_contains_nre_pricing(xml_text):
-                abort(400, "NRE no permite gValorItem (SIFEN 1851)")
+                abort(400, "NRE iTiDE=7 no permite gValorItem (SIFEN 1851)")
 
     # enviar a SIFEN
     repo_root_path = _repo_root()
@@ -6111,11 +6121,16 @@ def _generate_signed_xml_for_invoice(
     # Validación XSD previa a la firma
     _validate_rde_xsd_or_raise(build["xml_bytes"], base_dir, "pre-sign rDE")
 
+    if doc_type == "7":
+        xml_text_pre = build["xml_bytes"].decode("utf-8", errors="ignore")
+        if _xml_contains_nre_pricing(xml_text_pre):
+            raise RuntimeError("NRE iTiDE=7 no permite gValorItem (SIFEN 1851)")
+
     signed_bytes = sign_de_with_p12(build["xml_bytes"], p12_path, p12_password)
     if doc_type == "7":
         signed_text = signed_bytes.decode("utf-8", errors="ignore")
         if _xml_contains_nre_pricing(signed_text):
-            raise RuntimeError("NRE no permite gValorItem (SIFEN 1851)")
+            raise RuntimeError("NRE iTiDE=7 no permite gValorItem (SIFEN 1851)")
     signed_path = base_dir / f"rde_signed_{dnumdoc}.xml"
     signed_path.write_bytes(signed_bytes)
 

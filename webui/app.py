@@ -16,7 +16,7 @@ import zipfile
 import unicodedata
 from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask, g, request, redirect, url_for, render_template_string, abort, send_file, jsonify
 from pathlib import Path
@@ -1375,6 +1375,16 @@ def _build_invoice_xml_from_template(
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)
     _update_text(root, ".//s:dFecFirma", iso, ns)
 
+    def _last_day_of_month(base: date) -> date:
+        next_month = base.replace(day=28) + timedelta(days=4)
+        return next_month.replace(day=1) - timedelta(days=1)
+
+    nre_base_date: Optional[date] = None
+    nre_last_day: Optional[date] = None
+    if str(doc_type) == "7":
+        nre_base_date = date.fromisoformat(iso[:10])
+        nre_last_day = _last_day_of_month(nre_base_date)
+
     if str(doc_type) == "7":
         de_node = root.find(".//s:DE", ns)
         gdg = de_node.find("s:gDatGralOpe", ns) if de_node is not None else None
@@ -1540,6 +1550,30 @@ def _build_invoice_xml_from_template(
         fec = rem.get("fechaFactura") or rem.get("dFecEm")
         if fec:
             _ensure_child_ns(gcam, "dFecEm", ns_uri).text = str(fec).split(" ")[0]
+
+        # dFecEm debe estar dentro del mismo mes de dFeEmiDE
+        if nre_base_date and nre_last_day:
+            fec_node = gcam.find("s:dFecEm", ns)
+            fec_val = (fec_node.text or "").strip() if fec_node is not None and fec_node.text else ""
+            fec_date = None
+            if fec_val:
+                try:
+                    fec_date = date.fromisoformat(fec_val[:10])
+                except ValueError:
+                    fec_date = None
+            if fec_date is None:
+                fec_date = nre_base_date
+            if (
+                fec_date.year != nre_base_date.year
+                or fec_date.month != nre_base_date.month
+                or fec_date > nre_last_day
+            ):
+                fec_date = nre_last_day
+            if fec_date < nre_base_date:
+                fec_date = nre_base_date
+            if fec_node is None:
+                fec_node = _ensure_child_ns(gcam, "dFecEm", ns_uri)
+            fec_node.text = fec_date.isoformat()
 
     # Completar descripciones geográficas en emisor/receptor/autofactura
     g_emis = root.find(".//s:gEmis", ns)

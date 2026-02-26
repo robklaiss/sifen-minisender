@@ -16,6 +16,8 @@ from urllib.parse import parse_qs, urlparse
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
 
+from app.pdf.doc_types import doc_type_config, extract_doc_type
+
 
 _ND = "N/D"
 
@@ -27,6 +29,82 @@ RED_SOFT = colors.HexColor("#C75C5C")
 GREEN_SOFT = colors.HexColor("#2E7D32")
 
 DEFAULT_KUDE_QR_BASE_URL = "https://ekuatia.set.gov.py/consultas/kude?cdc="
+DEFAULT_LOGO_REL_PATH = Path("assets") / "industria-feris-isotipo.jpg"
+LOGO_TOP_MARGIN = 12 * mm
+LOGO_LEFT_MARGIN = 12 * mm
+LOGO_HEIGHT = 14 * mm
+LOGO_HEADER_PADDING = 16 * mm
+
+
+def _default_logo_path() -> Optional[str]:
+    repo_root = Path(__file__).resolve().parents[2]
+    candidate = repo_root / DEFAULT_LOGO_REL_PATH
+    if candidate.exists():
+        return str(candidate)
+    return None
+
+
+def _resolve_logo_path(issuer: Dict[str, Any]) -> Optional[str]:
+    candidates = [
+        issuer.get("logo_path"),
+        os.getenv("SIFEN_PDF_LOGO_PATH"),
+        os.getenv("SIFEN_ISSUER_LOGO_PATH"),
+        _default_logo_path(),
+    ]
+    for raw in candidates:
+        cleaned = _clean(raw)
+        if not cleaned:
+            continue
+        path = Path(cleaned).expanduser()
+        if path.exists() and path.is_file():
+            return str(path)
+    return None
+
+TRANS_TIPO_MAP = {
+    "1": "Propio",
+    "2": "Tercero",
+}
+
+TRANS_MOD_MAP = {
+    "1": "Terrestre",
+    "2": "Fluvial",
+    "3": "Aéreo",
+    "4": "Multimodal",
+}
+
+RESP_FLETE_MAP = {
+    "1": "Emisor de la Factura Electrónica",
+    "2": "Receptor de la Factura Electrónica",
+    "3": "Tercero",
+    "4": "Agente intermediario del transporte",
+    "5": "Transporte propio",
+}
+
+REM_RESP_MAP = {
+    "1": "Emisor de la factura",
+    "2": "Poseedor de la factura y bienes",
+    "3": "Empresa transportista",
+    "4": "Despachante de Aduanas",
+    "5": "Agente de transporte o intermediario",
+}
+
+REM_MOTIVO_MAP = {
+    "1": "Traslado por ventas",
+    "2": "Traslado por consignación",
+    "3": "Exportación",
+    "4": "Traslado por compra",
+    "5": "Importación",
+    "6": "Traslado por devolución",
+    "7": "Traslado entre locales de la empresa",
+    "8": "Traslado de bienes por transformación",
+    "9": "Traslado de bienes por reparación",
+    "10": "Traslado por emisor móvil",
+    "11": "Exhibición o demostración",
+    "12": "Participación en ferias",
+    "13": "Traslado de encomienda",
+    "14": "Decomiso",
+    "99": "Otro",
+}
 
 
 def _clean(value: Any) -> Optional[str]:
@@ -382,25 +460,8 @@ def _draw_header_left(c: canvas.Canvas, x: float, y_top: float, width: float, is
     gap = 2 * mm
 
     name = _safe(issuer.get("razon_social"))
-    logo_path = _clean(issuer.get("logo_path"))
-    logo_size = 18 * mm
-    logo_gap = 3 * mm
     text_x = x
     text_width = width
-    if logo_path and Path(logo_path).exists() and width > logo_size + logo_gap + 40 * mm:
-        try:
-            img = ImageReader(logo_path)
-            iw, ih = img.getSize()
-            scale = min(logo_size / iw, logo_size / ih)
-            w = iw * scale
-            h = ih * scale
-            img_x = x + (logo_size - w) / 2
-            img_y = y_top - logo_size + (logo_size - h) / 2
-            c.drawImage(img, img_x, img_y, w, h, mask="auto")
-            text_x = x + logo_size + logo_gap
-            text_width = width - logo_size - logo_gap
-        except Exception:
-            pass
 
     name_lines = _wrap_and_truncate(name, "Helvetica-Bold", name_font, text_width, max_lines=2)
 
@@ -1019,6 +1080,116 @@ def _draw_totals_footer(
     c.setFillColor(colors.black)
     return total_height
 
+
+def _extract_transport_info(
+    data: Dict[str, Any],
+    parsed: Dict[str, Any],
+    xml_fields: Dict[str, Any],
+) -> Dict[str, Any]:
+    xml_text = _clean(
+        data.get("source_xml")
+        or data.get("source_xml_text")
+        or data.get("response_xml")
+        or parsed.get("xml")
+    ) or ""
+
+    def _find_tag(tag: str) -> Optional[str]:
+        pattern = rf"<(?:\w+:)?{tag}>(.*?)</(?:\w+:)?{tag}>"
+        match = re.search(pattern, xml_text, flags=re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _pick(*keys: str) -> Optional[str]:
+        return _get_field(data, parsed, xml_fields, *keys)
+
+    def _pick_xml(*tags: str) -> Optional[str]:
+        for tag in tags:
+            value = _pick(tag) or _find_tag(tag)
+            if _clean(value):
+                return value
+        return None
+
+    tipo_trans_raw = _pick_xml("dDesTipTrans", "iTipTrans")
+    mod_trans_raw = _pick_xml("dDesModTrans", "iModTrans")
+    resp_flete_raw = _pick_xml("iRespFlete")
+    resp_emi_raw = _pick_xml("dDesRespEmiNR", "iRespEmiNR")
+    motivo_raw = _pick_xml("dDesMotEmiNR", "iMotEmiNR")
+    km = _pick_xml("dKmR", "km", "kmEstimado")
+    fec_em = _pick_xml("dFecEm", "dFecEmi", "dFecEmiDE")
+    ini_tras = _pick_xml("dIniTras", "iniFechaEstimadaTrans")
+    fin_tras = _pick_xml("dFinTras", "finFechaEstimadaTrans")
+
+    salida_dir = _pick_xml("dDirLocSal")
+    salida_num = _pick_xml("dNumCasSal")
+    salida_dep = _pick_xml("dDesDepSal")
+    salida_dis = _pick_xml("dDesDisSal")
+    salida_ciu = _pick_xml("dDesCiuSal")
+
+    entrega_dir = _pick_xml("dDirLocEnt")
+    entrega_num = _pick_xml("dNumCasEnt")
+    entrega_dep = _pick_xml("dDesDepEnt")
+    entrega_dis = _pick_xml("dDesDisEnt")
+    entrega_ciu = _pick_xml("dDesCiuEnt")
+
+    veh_tipo = _pick_xml("dTiVehTras")
+    veh_marca = _pick_xml("dMarVeh")
+    veh_id = _pick_xml("dNroIDVeh")
+
+    chof_nombre = _pick_xml("dNomChof")
+    chof_doc = _pick_xml("dNumIDChof")
+
+    def _format_loc(dir_val: Optional[str], num_val: Optional[str], dep: Optional[str], dis: Optional[str], ciu: Optional[str]) -> str:
+        parts = []
+        if _clean(dir_val):
+            parts.append(_clean(dir_val))
+        if _clean(num_val):
+            parts.append(f"Nr. {_clean(num_val)}")
+        geo_parts = [p for p in [dep, dis, ciu] if _clean(p)]
+        if geo_parts:
+            parts.append(" / ".join(geo_parts))
+        return " - ".join(parts) if parts else ""
+
+    salida = _format_loc(salida_dir, salida_num, salida_dep, salida_dis, salida_ciu)
+    entrega = _format_loc(entrega_dir, entrega_num, entrega_dep, entrega_dis, entrega_ciu)
+
+    items: List[Tuple[str, str]] = []
+    if tipo_trans_raw:
+        mapped = TRANS_TIPO_MAP.get(_clean(tipo_trans_raw) or "", None)
+        items.append(("Tipo transporte", _safe(mapped or tipo_trans_raw)))
+    if mod_trans_raw:
+        mapped = TRANS_MOD_MAP.get(_clean(mod_trans_raw) or "", None)
+        items.append(("Modalidad", _safe(mapped or mod_trans_raw)))
+    if resp_flete_raw:
+        mapped = RESP_FLETE_MAP.get(_clean(resp_flete_raw) or "", None)
+        items.append(("Responsable flete", _safe(mapped or resp_flete_raw)))
+    if resp_emi_raw:
+        mapped = REM_RESP_MAP.get(_clean(resp_emi_raw) or "", None)
+        items.append(("Responsable emisión", _safe(mapped or resp_emi_raw)))
+    if motivo_raw:
+        mapped = REM_MOTIVO_MAP.get(_clean(motivo_raw) or "", None)
+        items.append(("Motivo", _safe(mapped or motivo_raw)))
+    if km:
+        items.append(("Km estimados", _safe(km)))
+    if fec_em:
+        items.append(("Fecha emisión", _format_date(fec_em)))
+    if ini_tras or fin_tras:
+        tramo = " - ".join([_format_date(ini_tras) if ini_tras else "", _format_date(fin_tras) if fin_tras else ""]).strip(" -")
+        if tramo:
+            items.append(("Traslado", tramo))
+    if salida:
+        items.append(("Salida", salida))
+    if entrega:
+        items.append(("Entrega", entrega))
+    veh_line = " ".join([p for p in [veh_tipo, veh_marca, veh_id] if _clean(p)])
+    if _clean(veh_line):
+        items.append(("Vehículo", veh_line))
+    chof_line = " ".join([p for p in [chof_nombre, chof_doc] if _clean(p)])
+    if _clean(chof_line):
+        items.append(("Chofer", chof_line))
+
+    return {"items": items}
+
 def _extract_items(data: Dict[str, Any], parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
     for key in ("items", "detalle", "detalles", "detalle_items", "dDetalle"):
         value = parsed.get(key) if isinstance(parsed.get(key), list) else data.get(key)
@@ -1087,12 +1258,21 @@ def render_invoice_pdf(data: Dict[str, Any], issuer: Dict[str, Any], out_path: P
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     parsed = data.get("parsed_fields") if isinstance(data.get("parsed_fields"), dict) else {}
-    xml_fields = _extract_xml_fields(_clean(data.get("response_xml")) or "")
+    xml_text = _clean(
+        data.get("source_xml")
+        or data.get("source_xml_text")
+        or data.get("response_xml")
+        or parsed.get("xml")
+    ) or ""
+    xml_fields = _extract_xml_fields(xml_text)
     cdc = _extract_cdc(data, parsed)
     qr_override = _clean(data.get("qr_url") or data.get("dCarQR"))
     if qr_override:
         qr_override = qr_override.replace("&amp;", "&")
     kude_qr_value = qr_override or _build_kude_qr_value(cdc)
+
+    doc_type = extract_doc_type(data, parsed, xml_text)
+    doc_cfg = doc_type_config(doc_type)
 
     doc_series = _get_field(data, parsed, xml_fields, "dSerDoc", "serie", "serie_doc") or _ND
     doc_number = _get_field(data, parsed, xml_fields, "dNumDoc", "numero", "nro") or _ND
@@ -1141,11 +1321,30 @@ def render_invoice_pdf(data: Dict[str, Any], issuer: Dict[str, Any], out_path: P
 
     c = _PageNumCanvas(str(out_path), pagesize=A4)
     width, height = A4
-    margin = 18 * mm
-    x_left = margin
-    x_right = width - margin
+    margin_x = 18 * mm
+
+    logo_drawn = False
+    logo_path = _resolve_logo_path(issuer)
+    if logo_path:
+        try:
+            img = ImageReader(logo_path)
+            iw, ih = img.getSize()
+            if iw > 0 and ih > 0:
+                scale = LOGO_HEIGHT / ih
+                logo_width = iw * scale
+                logo_x = LOGO_LEFT_MARGIN
+                logo_y_top = height - LOGO_TOP_MARGIN
+                logo_y = logo_y_top - LOGO_HEIGHT
+                c.drawImage(img, logo_x, logo_y, logo_width, LOGO_HEIGHT, mask="auto")
+                logo_drawn = True
+        except Exception:
+            logo_drawn = False
+
+    top_margin = margin_x + (LOGO_HEADER_PADDING if logo_drawn else 0)
+    x_left = margin_x
+    x_right = width - margin_x
     content_width = x_right - x_left
-    y_top = height - margin
+    y_top = height - top_margin
 
     header_gap = 8 * mm
     header_box_width = min(80 * mm, content_width * 0.42)
@@ -1169,7 +1368,7 @@ def render_invoice_pdf(data: Dict[str, Any], issuer: Dict[str, Any], out_path: P
         x_left + left_width + header_gap,
         y_top,
         header_box_width,
-        "FACTURA",
+        doc_cfg["title"].upper(),
         [
             ("Serie / Número", f"{doc_series} / {doc_number}"),
             ("Fecha de emisión", fecha_emision),
@@ -1182,17 +1381,6 @@ def render_invoice_pdf(data: Dict[str, Any], issuer: Dict[str, Any], out_path: P
     y = y_top - header_height - 4 * mm
 
     ruc_dv_rec = _format_ruc_dv(receiver.get("ruc"), receiver.get("dv"))
-    cond_venta = _get_field(
-        data,
-        parsed,
-        xml_fields,
-        "dDCondOpe",
-        "dCondOpe",
-        "condicion_venta",
-        "cond_venta",
-    )
-    if cond_venta:
-        cond_venta = cond_venta.upper()
     remision = _get_field(data, parsed, xml_fields, "dNumRem", "dNumRemision", "remision")
     tel_rec = _safe(receiver.get("telefono"))
 
@@ -1202,11 +1390,27 @@ def render_invoice_pdf(data: Dict[str, Any], issuer: Dict[str, Any], out_path: P
         ("RUC:", ruc_dv_rec),
         ("Dirección:", _safe(receiver.get("direccion"))),
     ]
-    right_items = [
-        ("Condición de venta:", _safe(cond_venta)),
-        ("Remisión:", _safe(remision)),
-        ("Teléfono:", _safe(tel_rec)),
-    ]
+    right_items: List[Tuple[str, str]] = []
+    if doc_cfg.get("show_prices", True):
+        cond_venta = _get_field(
+            data,
+            parsed,
+            xml_fields,
+            "dDCondOpe",
+            "dCondOpe",
+            "condicion_venta",
+            "cond_venta",
+        )
+        if cond_venta:
+            cond_venta = cond_venta.upper()
+        right_items.append(("Condición de venta:", _safe(cond_venta)))
+
+    right_items.extend(
+        [
+            ("Remisión:", _safe(remision)),
+            ("Teléfono:", _safe(tel_rec)),
+        ]
+    )
 
     if has_receiver:
         band_height = _draw_customer_band(c, x_left, y, content_width, left_items, right_items)
@@ -1216,69 +1420,103 @@ def render_invoice_pdf(data: Dict[str, Any], issuer: Dict[str, Any], out_path: P
         y -= 6 * mm
 
     items_raw = _extract_items(data, parsed)
-    total_exentas = 0.0
-    total_grav5 = 0.0
-    total_grav10 = 0.0
-    if items_raw:
-        rows = []
-        for item in items_raw:
-            mapped, ex, g5, g10 = _map_item(item)
-            rows.append(mapped)
-            total_exentas += ex
-            total_grav5 += g5
-            total_grav10 += g10
-    else:
-        rows = [
-            {
-                "cant": "",
-                "descripcion": "(Sin ítems: este PDF es demo / consulta lote)",
-                "precio_unit": "",
-                "exentas": "0",
-                "grav5": "0",
-                "grav10": "0",
-            }
+
+    if doc_cfg.get("show_prices", True):
+        total_exentas = 0.0
+        total_grav5 = 0.0
+        total_grav10 = 0.0
+        if items_raw:
+            rows = []
+            for item in items_raw:
+                mapped, ex, g5, g10 = _map_item(item)
+                rows.append(mapped)
+                total_exentas += ex
+                total_grav5 += g5
+                total_grav10 += g10
+        else:
+            rows = [
+                {
+                    "cant": "",
+                    "descripcion": "(Sin ítems: este PDF es demo / consulta lote)",
+                    "precio_unit": "",
+                    "exentas": "0",
+                    "grav5": "0",
+                    "grav10": "0",
+                }
+            ]
+
+        columns = [
+            {"key": "cant", "label": "CANT.", "width": 0.1, "align": "right"},
+            {"key": "descripcion", "label": "DESCRIPCIÓN", "width": 0.45, "align": "left", "wrap": True},
+            {"key": "precio_unit", "label": "P. UNITARIO", "width": 0.15, "align": "right"},
+            {"key": "exentas", "label": "EXENTAS", "width": 0.1, "align": "right"},
+            {"key": "grav5", "label": "5%", "width": 0.1, "align": "right"},
+            {"key": "grav10", "label": "10%", "width": 0.1, "align": "right"},
         ]
 
-    columns = [
-        {"key": "cant", "label": "CANT.", "width": 0.1, "align": "right"},
-        {"key": "descripcion", "label": "DESCRIPCIÓN", "width": 0.45, "align": "left", "wrap": True},
-        {"key": "precio_unit", "label": "P. UNITARIO", "width": 0.15, "align": "right"},
-        {"key": "exentas", "label": "EXENTAS", "width": 0.1, "align": "right"},
-        {"key": "grav5", "label": "5%", "width": 0.1, "align": "right"},
-        {"key": "grav10", "label": "10%", "width": 0.1, "align": "right"},
-    ]
+        footer_top = 16 * mm
+        max_table_height = max(40 * mm, y - footer_top - 55 * mm)
+        # If IVA values are missing but we have gravadas, compute liquidation.
+        iva5_val = _to_num(iva5)
+        iva10_val = _to_num(iva10)
+        if iva5_val == 0 and total_grav5 > 0:
+            iva5_val = total_grav5 / 21
+        if iva10_val == 0 and total_grav10 > 0:
+            iva10_val = total_grav10 / 11
+        iva5 = _fmt_num(iva5_val, fallback="0")
+        iva10 = _fmt_num(iva10_val, fallback="0")
 
-    footer_top = 16 * mm
-    max_table_height = max(40 * mm, y - footer_top - 55 * mm)
-    # If IVA values are missing but we have gravadas, compute liquidation.
-    iva5_val = _to_num(iva5)
-    iva10_val = _to_num(iva10)
-    if iva5_val == 0 and total_grav5 > 0:
-        iva5_val = total_grav5 / 21
-    if iva10_val == 0 and total_grav10 > 0:
-        iva10_val = total_grav10 / 11
-    iva5 = _fmt_num(iva5_val, fallback="0")
-    iva10 = _fmt_num(iva10_val, fallback="0")
+        table_height = _draw_table(c, x_left, y, content_width, columns, rows, max_height=max_table_height)
+        y -= table_height
 
-    table_height = _draw_table(c, x_left, y, content_width, columns, rows, max_height=max_table_height)
-    y -= table_height
+        col_widths = [content_width * col["width"] for col in columns]
+        partial_height = _draw_value_partial_row(
+            c,
+            x_left,
+            y,
+            content_width,
+            col_widths,
+            _fmt_num(total_exentas, fallback="0"),
+            _fmt_num(total_grav5, fallback="0"),
+            _fmt_num(total_grav10, fallback="0"),
+        )
+        y -= partial_height + 4 * mm
 
-    col_widths = [content_width * col["width"] for col in columns]
-    partial_height = _draw_value_partial_row(
-        c,
-        x_left,
-        y,
-        content_width,
-        col_widths,
-        _fmt_num(total_exentas, fallback="0"),
-        _fmt_num(total_grav5, fallback="0"),
-        _fmt_num(total_grav10, fallback="0"),
-    )
-    y -= partial_height + 4 * mm
+        total_iva = _fmt_num(_to_num(iva5) + _to_num(iva10), fallback="0")
+        totals_height = _draw_totals_footer(c, x_left, y, content_width, total, iva5, iva10, total_iva)
+        y -= totals_height + 6 * mm
+    else:
+        rows = []
+        if items_raw:
+            for item in items_raw:
+                qty = _safe(item.get("cantidad") or item.get("cant") or item.get("dCant"), "")
+                desc = _safe(item.get("descripcion") or item.get("desc") or item.get("dDesc"), "")
+                rows.append({"cant": qty, "descripcion": desc})
+        if not rows:
+            rows = [{"cant": "", "descripcion": "(Sin ítems: este PDF es demo / consulta lote)"}]
 
-    total_iva = _fmt_num(_to_num(iva5) + _to_num(iva10), fallback="0")
-    totals_height = _draw_totals_footer(c, x_left, y, content_width, total, iva5, iva10, total_iva)
-    y -= totals_height + 6 * mm
+        columns = [
+            {"key": "cant", "label": "CANT.", "width": 0.15, "align": "right"},
+            {"key": "descripcion", "label": "DESCRIPCIÓN", "width": 0.85, "align": "left", "wrap": True},
+        ]
+
+        footer_top = 16 * mm
+        max_table_height = max(40 * mm, y - footer_top - 55 * mm)
+        table_height = _draw_table(c, x_left, y, content_width, columns, rows, max_height=max_table_height)
+        y -= table_height + 6 * mm
+
+        if doc_cfg.get("show_transport", False):
+            transport = _extract_transport_info(data, parsed, xml_fields)
+            if transport["items"]:
+                block_height = _draw_info_block(
+                    c,
+                    x_left,
+                    y,
+                    content_width,
+                    "TRANSPORTE",
+                    transport["items"],
+                )
+                y -= block_height + 6 * mm
 
     qr_size = 28 * mm
     qr_padding = 2 * mm

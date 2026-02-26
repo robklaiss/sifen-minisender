@@ -1321,22 +1321,26 @@ def _build_invoice_xml_from_template(
     _update_text(root, ".//s:dFecFirma", iso, ns)
 
     extra_json = extra_json or {}
-    if codseg is None:
-        codseg = (
-            (extra_json.get("ope") or {}).get("codseg")
-            or extra_json.get("codseg")
-            or extra_json.get("dCodSeg")
-        )
-    codseg_digits = re.sub(r"\D", "", str(codseg or "").strip())
-    if not re.fullmatch(r"\d{9}", codseg_digits):
-        raise RuntimeError("codseg requerido y debe tener exactamente 9 dígitos.")
-    de_node = root.find(".//s:DE", ns)
-    if de_node is None:
-        raise RuntimeError("No se encontró <DE> en el XML base.")
-    gopede = de_node.find("s:gOpeDE", ns)
-    if gopede is None:
-        gopede = _ensure_child_ns(de_node, "gOpeDE", ns_uri)
-    _ensure_child_ns(gopede, "dCodSeg", ns_uri).text = codseg_digits
+    codseg_digits: Optional[str] = None
+    if str(doc_type) == "7":
+        if codseg is None:
+            codseg = (
+                (extra_json.get("ope") or {}).get("codseg")
+                or extra_json.get("codseg")
+                or extra_json.get("dCodSeg")
+            )
+        codseg_digits = re.sub(r"\D", "", str(codseg or "").strip())
+        if not re.fullmatch(r"\d{9}", codseg_digits):
+            raise RuntimeError("codseg requerido y debe tener exactamente 9 dígitos.")
+        de_node = root.find(".//s:DE", ns)
+        if de_node is None:
+            raise RuntimeError("No se encontró <DE> en el XML base.")
+        gopede = de_node.find("s:gOpeDE", ns)
+        if gopede is None:
+            gopede = _ensure_child_ns(de_node, "gOpeDE", ns_uri)
+        _ensure_child_ns(gopede, "dCodSeg", ns_uri).text = codseg_digits
+    else:
+        codseg = None
 
     fe_ini = _text(".//s:gTimb/s:dFeIniT")
     if fe_ini:

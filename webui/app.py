@@ -1307,6 +1307,19 @@ def _strip_nre_item_pricing(item: ET.Element, ns_uri: str) -> None:
         ns_uri,
     )
 
+def _strip_nre_forbidden_groups(root: ET.Element, ns: dict) -> None:
+    if root is None:
+        return
+    ns_uri = (ns or {}).get("s") or "http://ekuatia.set.gov.py/sifen/xsd"
+    de_node = root.find(".//s:DE", ns) if ns else root.find(".//DE")
+    if de_node is None:
+        return
+    gdtip = de_node.find("s:gDtipDE", ns) if ns else de_node.find("gDtipDE")
+    if gdtip is None:
+        return
+    for item in gdtip.findall("s:gCamItem", ns) if ns else gdtip.findall("gCamItem"):
+        _strip_nre_item_pricing(item, ns_uri)
+
 def _xml_contains_nre_pricing(xml_text: str) -> bool:
     if not xml_text:
         return False
@@ -1954,11 +1967,6 @@ def _build_invoice_xml_from_template(
         _ensure_dis_dep_order_v150(root, ns, ns_uri)
         if (os.getenv("DEBUG_XSD_ORDER") or "").strip() == "1":
             _debug_xsd_order(root, ns, ns_uri, "after_dep_dis")
-        de_node = root.find(".//s:DE", ns)
-        gdtip = de_node.find("s:gDtipDE", ns) if de_node is not None else None
-        if gdtip is not None:
-            for item in gdtip.findall("s:gCamItem", ns):
-                _strip_nre_item_pricing(item, ns_uri)
 
     iva_total = iva5 + iva10
     total_str = _fmt_decimal_places(total, money_places_default)
@@ -2117,6 +2125,8 @@ def _build_invoice_xml_from_template(
 
     if (os.getenv("DEBUG_XSD_ORDER") or "").strip() == "1" and str(doc_type).strip() == "7":
         _debug_xsd_order(root, ns, ns_uri, "final_pre_sign")
+    if str(doc_type).strip() == "7":
+        _strip_nre_forbidden_groups(root, ns)
     out = ET.tostring(root, encoding="utf-8", method="xml")
     return {
         "xml_bytes": out,
@@ -5879,6 +5889,15 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
         base_dir = _artifacts_root() / f"webui_emit_{invoice_id}_{ts}"
         base_dir.mkdir(parents=True, exist_ok=True)
 
+        if doc_type == "7":
+            try:
+                xml_root = ET.fromstring(build["xml_bytes"])
+            except ET.ParseError:
+                xml_root = None
+            if xml_root is not None:
+                _strip_nre_forbidden_groups(xml_root, {"s": "http://ekuatia.set.gov.py/sifen/xsd"})
+                build["xml_bytes"] = ET.tostring(xml_root, encoding="utf-8", method="xml")
+
         in_path = base_dir / f"rde_input_{build['dnumdoc']}.xml"
         in_path.write_bytes(build["xml_bytes"])
 
@@ -6111,6 +6130,15 @@ def _generate_signed_xml_for_invoice(
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_dir = _artifacts_root() / f"webui_sign_{invoice_id}_{ts}"
     base_dir.mkdir(parents=True, exist_ok=True)
+
+    if doc_type == "7":
+        try:
+            xml_root = ET.fromstring(build["xml_bytes"])
+        except ET.ParseError:
+            xml_root = None
+        if xml_root is not None:
+            _strip_nre_forbidden_groups(xml_root, {"s": "http://ekuatia.set.gov.py/sifen/xsd"})
+            build["xml_bytes"] = ET.tostring(xml_root, encoding="utf-8", method="xml")
 
     in_path = base_dir / f"rde_input_{dnumdoc}.xml"
     in_path.write_bytes(build["xml_bytes"])

@@ -11,6 +11,7 @@ import threading
 import time
 import sys
 import random
+import secrets
 import zipfile
 import unicodedata
 from decimal import Decimal, ROUND_HALF_UP
@@ -18,7 +19,7 @@ from email.message import EmailMessage
 from datetime import datetime, date
 from flask import Flask, g, request, redirect, url_for, render_template_string, abort, send_file, jsonify
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 import xml.etree.ElementTree as ET
 
 # requests (HTTP) for eventos
@@ -714,6 +715,52 @@ def _parse_extra_json(text: Optional[str], doc_type: str) -> dict:
             raise RuntimeError(f"JSON extra inválido: {e}")
     fallback = _default_extra_json_for(doc_type)
     return fallback or {}
+
+def _normalize_codseg(value: Optional[str]) -> str:
+    digits = re.sub(r"\D", "", str(value or "").strip())
+    return digits if re.fullmatch(r"\d{9}", digits) else ""
+
+def _ensure_remision_codseg_in_extra(
+    con: sqlite3.Connection,
+    invoice_id: int,
+    doc_type: str,
+    extra_json: dict,
+) -> Tuple[dict, Optional[str]]:
+    if str(doc_type) != "7":
+        return extra_json, None
+    if not isinstance(extra_json, dict):
+        extra_json = {}
+    ope = extra_json.get("ope")
+    if not isinstance(ope, dict):
+        ope = {}
+
+    codseg = _normalize_codseg(ope.get("codseg"))
+    if not codseg:
+        codseg = _normalize_codseg(extra_json.get("codseg") or extra_json.get("dCodSeg"))
+    if not codseg:
+        codseg = f"{secrets.randbelow(1_000_000_000):09d}"
+
+    changed = False
+    if extra_json.get("ope") is not ope:
+        extra_json["ope"] = ope
+        changed = True
+    if ope.get("codseg") != codseg:
+        ope["codseg"] = codseg
+        changed = True
+    if "dCodSeg" in extra_json and extra_json.get("dCodSeg") != codseg:
+        extra_json["dCodSeg"] = codseg
+        changed = True
+    if "codseg" in extra_json and extra_json.get("codseg") != codseg:
+        extra_json["codseg"] = codseg
+        changed = True
+
+    if not changed:
+        return extra_json, None
+
+    payload = json.dumps(extra_json, ensure_ascii=False, indent=2)
+    con.execute("UPDATE invoices SET doc_extra_json=? WHERE id=?", (payload, invoice_id))
+    con.commit()
+    return extra_json, payload
 
 def _get_transport_from_extra(extra_json: dict) -> dict:
     extra_json = extra_json or {}
@@ -4696,6 +4743,14 @@ def invoice_detail(invoice_id: int):
         extra_parsed = _parse_extra_json(inv["doc_extra_json"], doc_type)
     except Exception:
         extra_parsed = _default_extra_json_for(doc_type) or {}
+    extra_parsed, extra_updated = _ensure_remision_codseg_in_extra(
+        con,
+        invoice_id,
+        doc_type,
+        extra_parsed,
+    )
+    if extra_updated is not None:
+        extra_prefill = extra_updated
     transport = _get_transport_from_extra(extra_parsed)
     t_sal = transport.get("salida") or {}
     t_ent = transport.get("entrega") or {}

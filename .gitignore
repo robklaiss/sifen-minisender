@@ -44,3 +44,7 @@ secrets/*
 
 # PROD runtime (no commitear)
 prod/
+
+# local artifacts
+_snapshots/
+responde

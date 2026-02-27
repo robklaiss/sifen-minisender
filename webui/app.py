@@ -1101,7 +1101,7 @@ def _build_cancel_event_xml(cdc: str, motivo: str, event_id: str) -> bytes:
     dTiGDE.text = "1"
     gGroupTiEvt = ET.SubElement(rEve, f"{{{ns_uri}}}gGroupTiEvt")
     rGeVeCan = ET.SubElement(gGroupTiEvt, f"{{{ns_uri}}}rGeVeCan")
-    cdc_el = ET.SubElement(rGeVeCan, f"{{{ns_uri}}}Id")
+    cdc_el = ET.SubElement(rGeVeCan, f"{{{ns_uri}}}id")
     cdc_el.text = cdc
     mot = ET.SubElement(rGeVeCan, f"{{{ns_uri}}}mOtEve")
     mot.text = motivo

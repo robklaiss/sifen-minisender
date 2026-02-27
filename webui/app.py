@@ -397,9 +397,41 @@ def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        return datetime.fromisoformat(raw)
     except Exception:
         return None
+
+def _normalize_local_dt(value: Optional[str], tz: ZoneInfo) -> Optional[datetime]:
+    dt = _parse_iso_dt(value)
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=tz)
+    return dt.astimezone(tz)
+
+def _compute_cancel_deadline_and_remaining(
+    issued_at: Optional[str],
+    now: Optional[datetime] = None,
+    tz_name: str = "America/Asuncion",
+) -> Tuple[Optional[str], Optional[int]]:
+    tz = ZoneInfo(tz_name)
+    issue_dt = _normalize_local_dt(issued_at, tz)
+    if issue_dt is None:
+        return None, None
+    if now is None:
+        now = datetime.now(tz)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    else:
+        now = now.astimezone(tz)
+    issue_dt = issue_dt.replace(microsecond=0)
+    now = now.replace(microsecond=0)
+    deadline = issue_dt + timedelta(hours=24)
+    remaining_seconds = int((deadline - now).total_seconds())
+    return deadline.isoformat(timespec="seconds"), remaining_seconds
 
 def _ensure_doc_number(con: sqlite3.Connection, inv: sqlite3.Row, invoice_id: int) -> str:
     doc_number = (inv["doc_number"] or "").strip() if "doc_number" in inv.keys() else ""
@@ -3529,6 +3561,51 @@ BASE_HTML = """
       setInterval(check, 15000);
     })();
   </script>
+  <script>
+    (function () {
+      const el = document.getElementById("cancel-remaining");
+      if (!el) return;
+      const raw = el.dataset.cancelRemaining || "";
+      if (!raw) return;
+      const remaining = Number(raw);
+      if (!Number.isFinite(remaining)) return;
+      const btn = document.getElementById("cancel-btn");
+
+      function renderExpired() {
+        el.textContent = "Vencido";
+        if (btn) btn.disabled = true;
+      }
+
+      if (remaining <= 0) {
+        renderExpired();
+        return;
+      }
+
+      if (remaining >= 3600) {
+        const hrs = Math.floor(remaining / 3600);
+        const mins = Math.floor((remaining % 3600) / 60);
+        el.textContent = `Quedan ${hrs}h ${mins}m`;
+        return;
+      }
+
+      let secondsLeft = remaining;
+      function pad2(n) {
+        return String(n).padStart(2, "0");
+      }
+      function renderCountdown() {
+        if (secondsLeft <= 0) {
+          renderExpired();
+          return;
+        }
+        const mins = Math.floor(secondsLeft / 60);
+        const secs = secondsLeft % 60;
+        el.textContent = `${pad2(mins)}:${pad2(secs)}`;
+        secondsLeft -= 1;
+      }
+      renderCountdown();
+      setInterval(renderCountdown, 1000);
+    })();
+  </script>
 </body>
 </html>
 """
@@ -5123,6 +5200,9 @@ def invoice_detail(invoice_id: int):
     t_ent = transport.get("entrega") or {}
     t_veh = transport.get("vehiculo") or {}
     t_trn = transport.get("transportista") or {}
+    cancel_deadline_iso, cancel_remaining_seconds = _compute_cancel_deadline_and_remaining(
+        inv["issued_at"] or inv["signed_at"]
+    )
 
     body = render_template_string(
         """
@@ -5476,6 +5556,15 @@ def invoice_detail(invoice_id: int):
                   CDC: <span class="mono">{{ cdc or "—" }}</span>
                 </div>
                 <div class="small mb-2">
+                  Tiempo disponible para cancelar:
+                  <span
+                    id="cancel-remaining"
+                    class="mono"
+                    data-cancel-deadline="{{ cancel_deadline_iso or '' }}"
+                    data-cancel-remaining="{{ cancel_remaining_seconds if cancel_remaining_seconds is not none else '' }}"
+                  >—</span>
+                </div>
+                <div class="small mb-2">
                   Último evento: <span class="mono">{{ inv.last_event_type or "—" }}</span><br>
                   Evento ID: <span class="mono">{{ inv.last_event_id or "—" }}</span><br>
                   Fecha evento: <span class="mono">{{ inv.last_event_at or "—" }}</span><br>
@@ -5502,7 +5591,7 @@ def invoice_detail(invoice_id: int):
                     {% endfor %}
                   </select>
                   <input class="form-control form-control-sm" name="motivo" style="min-width: 260px;" placeholder="Motivo cancelación (5-500)">
-                  <button class="btn btn-sm btn-danger" type="submit">Cancelar</button>
+                  <button class="btn btn-sm btn-danger" type="submit" id="cancel-btn">Cancelar</button>
                 </form>
 
                 <form method="post" action="{{ url_for('invoice_inutil', invoice_id=inv.id) }}" class="mt-2">

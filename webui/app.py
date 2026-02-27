@@ -1192,6 +1192,10 @@ def _build_event_soap_bytes(signed_event_xml: str) -> bytes:
 
     return LET.tostring(envelope, xml_declaration=False, encoding="UTF-8", pretty_print=False)
 
+
+def _event_post_url(wsdl_url: str) -> str:
+    return wsdl_url[:-5] if wsdl_url.endswith(".wsdl") else wsdl_url
+
 def _send_cancel_event(
     *,
     env: str,
@@ -1202,6 +1206,7 @@ def _send_cancel_event(
 ) -> dict:
     cfg = get_sifen_config(env=env)
     wsdl_url = cfg.get_soap_service_url("evento")
+    post_url = _event_post_url(wsdl_url)
 
     # construir evento
     event_xml = _build_cancel_event_xml(cdc, motivo, event_id)
@@ -1220,18 +1225,24 @@ def _send_cancel_event(
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "event_signed.xml").write_text(signed_event, encoding="utf-8")
     (run_dir / "soap_last_request.xml").write_bytes(soap_bytes)
+    (run_dir / "endpoint_urls.txt").write_text(
+        f"wsdl_url={wsdl_url}\npost_url={post_url}\n",
+        encoding="utf-8",
+    )
 
     headers = {
         "Content-Type": "application/soap+xml; charset=utf-8",
         "Accept": "application/soap+xml, text/xml, */*",
     }
-    resp = requests.post(wsdl_url, data=soap_bytes, headers=headers, cert=(cert_path, key_path), timeout=(15, 60))
+    resp = requests.post(post_url, data=soap_bytes, headers=headers, cert=(cert_path, key_path), timeout=(15, 60))
     (run_dir / "soap_last_response.xml").write_bytes(resp.content)
 
     parsed = _parse_consult_response(resp.content.decode("utf-8", errors="ignore"))
     parsed["http_status"] = resp.status_code
     parsed["artifacts_dir"] = str(run_dir)
     parsed["event_id"] = event_id
+    parsed["wsdl_url"] = wsdl_url
+    parsed["post_url"] = post_url
     return parsed
 
 def _send_inutil_event(
@@ -1249,6 +1260,7 @@ def _send_inutil_event(
 ) -> dict:
     cfg = get_sifen_config(env=env)
     wsdl_url = cfg.get_soap_service_url("evento")
+    post_url = _event_post_url(wsdl_url)
 
     event_xml = _build_inutil_event_xml(
         timbrado=timbrado,
@@ -1274,18 +1286,24 @@ def _send_inutil_event(
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "event_signed.xml").write_text(signed_event, encoding="utf-8")
     (run_dir / "soap_last_request.xml").write_bytes(soap_bytes)
+    (run_dir / "endpoint_urls.txt").write_text(
+        f"wsdl_url={wsdl_url}\npost_url={post_url}\n",
+        encoding="utf-8",
+    )
 
     headers = {
         "Content-Type": "application/soap+xml; charset=utf-8",
         "Accept": "application/soap+xml, text/xml, */*",
     }
-    resp = requests.post(wsdl_url, data=soap_bytes, headers=headers, cert=(cert_path, key_path), timeout=(15, 60))
+    resp = requests.post(post_url, data=soap_bytes, headers=headers, cert=(cert_path, key_path), timeout=(15, 60))
     (run_dir / "soap_last_response.xml").write_bytes(resp.content)
 
     parsed = _parse_consult_response(resp.content.decode("utf-8", errors="ignore"))
     parsed["http_status"] = resp.status_code
     parsed["artifacts_dir"] = str(run_dir)
     parsed["event_id"] = event_id
+    parsed["wsdl_url"] = wsdl_url
+    parsed["post_url"] = post_url
     return parsed
 
 def _update_text(root: ET.Element, xpath: str, value: str, ns: dict) -> None:

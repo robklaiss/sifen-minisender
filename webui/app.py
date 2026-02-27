@@ -15,6 +15,7 @@ import secrets
 import zipfile
 import unicodedata
 import csv
+import mimetypes
 from functools import lru_cache
 from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
@@ -3480,7 +3481,7 @@ BASE_HTML = """
   <nav class="navbar fixed-top app-navbar">
     <div class="container d-flex justify-content-between align-items-center">
       <div class="d-flex align-items-center gap-3">
-        <img src="{{ url_for('issuer_logo') }}" alt="Industria Feris" class="brand-logo" onerror="this.style.display='none'">
+        <img src="/assets/issuer-logo" alt="Industria Feris" class="brand-logo" onerror="this.onerror=function(){this.style.display='none';}; this.src='/issuer_logo';">
         <div class="brand-title">Industria Feris – Facturación</div>
       </div>
       <div class="d-flex gap-2">
@@ -3937,17 +3938,35 @@ def settings_page():
     )
     return render_template_string(BASE_HTML, title="Settings", db_path=DB_PATH, body=body)
 
-@app.route("/assets/issuer-logo")
-def issuer_logo():
-    path = (os.getenv("SIFEN_ISSUER_LOGO_PATH") or "").strip()
-    if not path:
-        path = str(_repo_root() / "assets" / "industria-feris-isotipo.jpg")
-    p = Path(path)
-    if not p.is_absolute():
-        p = (_repo_root() / p).resolve()
+def _resolve_issuer_logo_path() -> Tuple[Optional[Path], str]:
+    raw = (os.getenv("SIFEN_ISSUER_LOGO_PATH") or "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = (_repo_root() / p).resolve()
+            source = f"SIFEN_ISSUER_LOGO_PATH (rel:{raw})"
+        else:
+            p = p.resolve()
+            source = "SIFEN_ISSUER_LOGO_PATH (abs)"
+    else:
+        p = (_repo_root() / "assets" / "industria-feris-isotipo.jpg").resolve()
+        source = "default assets/industria-feris-isotipo.jpg"
+
     if not p.exists():
+        return None, f"{source} -> {p} (not found)"
+    if not p.is_file():
+        return None, f"{source} -> {p} (not a file)"
+    return p, f"{source} -> {p}"
+
+@app.route("/assets/issuer-logo")
+@app.route("/issuer_logo")
+def issuer_logo():
+    path, detail = _resolve_issuer_logo_path()
+    if not path:
+        print(f"[issuer-logo] 404: {detail}")
         abort(404)
-    resp = send_file(p, mimetype="image/jpeg", as_attachment=False)
+    mimetype, _ = mimetypes.guess_type(str(path))
+    resp = send_file(path, mimetype=mimetype or "image/jpeg", as_attachment=False)
     resp.headers["Cache-Control"] = "public, max-age=3600"
     return resp
 

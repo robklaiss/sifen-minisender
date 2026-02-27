@@ -45,9 +45,9 @@ def _default_logo_path() -> Optional[str]:
 
 
 def _resolve_logo_path(issuer: Dict[str, Any]) -> Optional[str]:
+    repo_root = Path(__file__).resolve().parents[2]
     candidates = [
         issuer.get("logo_path"),
-        os.getenv("SIFEN_PDF_LOGO_PATH"),
         os.getenv("SIFEN_ISSUER_LOGO_PATH"),
         _default_logo_path(),
     ]
@@ -56,6 +56,8 @@ def _resolve_logo_path(issuer: Dict[str, Any]) -> Optional[str]:
         if not cleaned:
             continue
         path = Path(cleaned).expanduser()
+        if not path.is_absolute():
+            path = (repo_root / path).resolve()
         if path.exists() and path.is_file():
             return str(path)
     return None

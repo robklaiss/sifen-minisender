@@ -1097,11 +1097,9 @@ def _build_cancel_event_xml(cdc: str, motivo: str, event_id: str) -> bytes:
     dFecFirma.text = sifen_timestamp()
     dVerFor = ET.SubElement(rEve, f"{{{ns_uri}}}dVerFor")
     dVerFor.text = "150"
-    dTiGDE = ET.SubElement(rEve, f"{{{ns_uri}}}dTiGDE")
-    dTiGDE.text = "1"
     gGroupTiEvt = ET.SubElement(rEve, f"{{{ns_uri}}}gGroupTiEvt")
     rGeVeCan = ET.SubElement(gGroupTiEvt, f"{{{ns_uri}}}rGeVeCan")
-    cdc_el = ET.SubElement(rGeVeCan, f"{{{ns_uri}}}id")
+    cdc_el = ET.SubElement(rGeVeCan, f"{{{ns_uri}}}Id")
     cdc_el.text = cdc
     mot = ET.SubElement(rGeVeCan, f"{{{ns_uri}}}mOtEve")
     mot.text = motivo
@@ -1128,8 +1126,6 @@ def _build_inutil_event_xml(
     dFecFirma.text = sifen_timestamp()
     dVerFor = ET.SubElement(rEve, f"{{{ns_uri}}}dVerFor")
     dVerFor.text = "150"
-    dTiGDE = ET.SubElement(rEve, f"{{{ns_uri}}}dTiGDE")
-    dTiGDE.text = "2"
     gGroupTiEvt = ET.SubElement(rEve, f"{{{ns_uri}}}gGroupTiEvt")
     rGeVeInu = ET.SubElement(gGroupTiEvt, f"{{{ns_uri}}}rGeVeInu")
     ET.SubElement(rGeVeInu, f"{{{ns_uri}}}dNumTim").text = timbrado
@@ -1140,6 +1136,13 @@ def _build_inutil_event_xml(
     ET.SubElement(rGeVeInu, f"{{{ns_uri}}}iTiDE").text = tipo_doc
     ET.SubElement(rGeVeInu, f"{{{ns_uri}}}mOtEve").text = motivo
     return ET.tostring(root, encoding="utf-8", method="xml")
+
+def _sign_event_xml(xml_bytes: bytes) -> bytes:
+    p12_path = os.getenv("SIFEN_SIGN_P12_PATH") or os.getenv("SIFEN_P12_PATH") or os.getenv("SIFEN_CERT_PATH")
+    p12_password = os.getenv("SIFEN_SIGN_P12_PASSWORD") or os.getenv("SIFEN_P12_PASSWORD") or os.getenv("SIFEN_CERT_PASSWORD")
+    if not p12_path or not p12_password:
+        raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar evento.")
+    return sign_event_with_p12(xml_bytes, p12_path, p12_password)
 
 def _send_cancel_event(
     *,
@@ -1154,12 +1157,7 @@ def _send_cancel_event(
 
     # construir evento
     event_xml = _build_cancel_event_xml(cdc, motivo, event_id)
-    p12_path = os.getenv("SIFEN_SIGN_P12_PATH") or os.getenv("SIFEN_P12_PATH") or os.getenv("SIFEN_CERT_PATH")
-    p12_password = os.getenv("SIFEN_SIGN_P12_PASSWORD") or os.getenv("SIFEN_P12_PASSWORD") or os.getenv("SIFEN_CERT_PASSWORD")
-    if not p12_path or not p12_password:
-        raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar evento.")
-
-    signed_event = sign_event_with_p12(event_xml, p12_path, p12_password).decode("utf-8")
+    signed_event = _sign_event_xml(event_xml).decode("utf-8")
 
     # construir SOAP
     soap_ns = "http://www.w3.org/2003/05/soap-envelope"
@@ -1226,12 +1224,7 @@ def _send_inutil_event(
         event_id=event_id,
     )
 
-    p12_path = os.getenv("SIFEN_SIGN_P12_PATH") or os.getenv("SIFEN_P12_PATH") or os.getenv("SIFEN_CERT_PATH")
-    p12_password = os.getenv("SIFEN_SIGN_P12_PASSWORD") or os.getenv("SIFEN_P12_PASSWORD") or os.getenv("SIFEN_CERT_PASSWORD")
-    if not p12_path or not p12_password:
-        raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar evento.")
-
-    signed_event = sign_event_with_p12(event_xml, p12_path, p12_password).decode("utf-8")
+    signed_event = _sign_event_xml(event_xml).decode("utf-8")
 
     soap_ns = "http://www.w3.org/2003/05/soap-envelope"
     sifen_ns = "http://ekuatia.set.gov.py/sifen/xsd"

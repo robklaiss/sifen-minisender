@@ -25,6 +25,7 @@ from flask import Flask, g, request, redirect, url_for, render_template_string, 
 from pathlib import Path
 from typing import Optional, Tuple
 import xml.etree.ElementTree as ET
+from lxml import etree as LET
 
 # requests (HTTP) for eventos
 import requests
@@ -1176,6 +1177,21 @@ def _sign_event_xml(xml_bytes: bytes) -> bytes:
         raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar evento.")
     return sign_event_with_p12(xml_bytes, p12_path, p12_password)
 
+def _build_event_soap_bytes(signed_event_xml: str) -> bytes:
+    soap_ns = "http://www.w3.org/2003/05/soap-envelope"
+    sifen_ns = "http://ekuatia.set.gov.py/sifen/xsd"
+
+    envelope = LET.Element(f"{{{soap_ns}}}Envelope", nsmap={"env": soap_ns, "sifen": sifen_ns})
+    LET.SubElement(envelope, f"{{{soap_ns}}}Header")
+    body = LET.SubElement(envelope, f"{{{soap_ns}}}Body")
+    root = LET.SubElement(body, f"{{{sifen_ns}}}rEnviEventoDe")
+    did = LET.SubElement(root, f"{{{sifen_ns}}}dId")
+    did.text = _make_did_15()
+    devreg = LET.SubElement(root, f"{{{sifen_ns}}}dEvReg")
+    devreg.append(LET.fromstring(signed_event_xml.encode("utf-8")))
+
+    return LET.tostring(envelope, xml_declaration=False, encoding="UTF-8", pretty_print=False)
+
 def _send_cancel_event(
     *,
     env: str,
@@ -1192,18 +1208,7 @@ def _send_cancel_event(
     signed_event = _sign_event_xml(event_xml).decode("utf-8")
 
     # construir SOAP
-    soap_ns = "http://www.w3.org/2003/05/soap-envelope"
-    sifen_ns = "http://ekuatia.set.gov.py/sifen/xsd"
-    envelope = ET.Element(f"{{{soap_ns}}}Envelope")
-    ET.SubElement(envelope, f"{{{soap_ns}}}Header")
-    body = ET.SubElement(envelope, f"{{{soap_ns}}}Body")
-    root = ET.SubElement(body, f"{{{sifen_ns}}}rEnviEventoDe")
-    did = ET.SubElement(root, f"{{{sifen_ns}}}dId")
-    did.text = _make_did_15()
-    devreg = ET.SubElement(root, f"{{{sifen_ns}}}dEvReg")
-    devreg.append(ET.fromstring(signed_event))
-
-    soap_bytes = ET.tostring(envelope, encoding="utf-8", method="xml")
+    soap_bytes = _build_event_soap_bytes(signed_event)
 
     # POST con mTLS
     cert_path = os.getenv("SIFEN_CERT_PATH") or ""
@@ -1258,18 +1263,7 @@ def _send_inutil_event(
 
     signed_event = _sign_event_xml(event_xml).decode("utf-8")
 
-    soap_ns = "http://www.w3.org/2003/05/soap-envelope"
-    sifen_ns = "http://ekuatia.set.gov.py/sifen/xsd"
-    envelope = ET.Element(f"{{{soap_ns}}}Envelope")
-    ET.SubElement(envelope, f"{{{soap_ns}}}Header")
-    body = ET.SubElement(envelope, f"{{{soap_ns}}}Body")
-    root = ET.SubElement(body, f"{{{sifen_ns}}}rEnviEventoDe")
-    did = ET.SubElement(root, f"{{{sifen_ns}}}dId")
-    did.text = _make_did_15()
-    devreg = ET.SubElement(root, f"{{{sifen_ns}}}dEvReg")
-    devreg.append(ET.fromstring(signed_event))
-
-    soap_bytes = ET.tostring(envelope, encoding="utf-8", method="xml")
+    soap_bytes = _build_event_soap_bytes(signed_event)
 
     cert_path = os.getenv("SIFEN_CERT_PATH") or ""
     key_path = os.getenv("SIFEN_KEY_PATH") or ""

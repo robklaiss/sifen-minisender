@@ -3445,12 +3445,12 @@ BASE_HTML = """
   <title>{{title}}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    :root { --header-height: 72px; }
+    :root { --header-height: 96px; }
     body { padding: 0; }
     .page-container { padding-top: calc(var(--header-height) + 24px); padding-bottom: 24px; }
     .app-navbar { background: #fff; border-bottom: 1px solid #e9ecef; }
     .app-navbar .container { padding-top: 10px; padding-bottom: 10px; }
-    .brand-logo { height: 28px; width: auto; display: block; }
+    .brand-logo { height: 70px; width: 70px; display: block; object-fit: contain; }
     .brand-title { font-size: 1.1rem; font-weight: 600; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     .nowrap { white-space: nowrap; }

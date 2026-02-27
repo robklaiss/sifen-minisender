@@ -91,7 +91,6 @@ def test_cancel_event_ws_xsd_v150_offline():
     assert event_root.find(".//ds:Signature", namespaces=ns) is not None
     assert event_root.find(".//s:rGeVeCan/s:Id", namespaces=ns) is not None
     assert event_root.find(".//s:rGeVeCan/s:id", namespaces=ns) is None
-
     r_envi = etree.Element(f"{{{sifen_ns}}}rEnviEventoDe", nsmap={None: sifen_ns})
     d_id = etree.SubElement(r_envi, f"{{{sifen_ns}}}dId")
     d_id.text = _make_did_15()

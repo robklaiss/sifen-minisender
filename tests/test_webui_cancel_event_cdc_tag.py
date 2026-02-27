@@ -13,14 +13,14 @@ def test_cancel_event_cdc_tag_is_lowercase():
     xml_bytes = webapp._build_cancel_event_xml(cdc, motivo, event_id)
     xml_text = xml_bytes.decode("utf-8")
 
-    assert "<id>" in xml_text
-    assert "<Id>" not in xml_text
+    assert "<Id>" in xml_text
+    assert "<id>" not in xml_text
 
     ns = {"s": "http://ekuatia.set.gov.py/sifen/xsd"}
     root = ET.fromstring(xml_bytes)
-    id_el = root.find(".//s:rGeVeCan/s:id", ns)
+    id_el = root.find(".//s:rGeVeCan/s:Id", ns)
     assert id_el is not None
     assert (id_el.text or "").strip() == cdc
 
-    bad_el = root.find(".//s:rGeVeCan/s:Id", ns)
+    bad_el = root.find(".//s:rGeVeCan/s:id", ns)
     assert bad_el is None

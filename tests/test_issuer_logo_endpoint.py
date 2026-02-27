@@ -20,6 +20,23 @@ def test_issuer_logo_default_path(monkeypatch):
         response = client.get(path)
         _assert_image_response(response)
 
+def test_issuer_logo_env_missing_fallback(monkeypatch):
+    monkeypatch.setenv(
+        "SIFEN_ISSUER_LOGO_PATH",
+        "/opt/sifen-minisender/assets/industria-feris-isotipo.jpg",
+    )
+    client = app.test_client()
+
+    response = client.get("/assets/issuer-logo")
+    _assert_image_response(response)
+
+def test_issuer_logo_env_empty_fallback(monkeypatch):
+    monkeypatch.setenv("SIFEN_ISSUER_LOGO_PATH", "")
+    client = app.test_client()
+
+    response = client.get("/assets/issuer-logo")
+    _assert_image_response(response)
+
 
 def test_issuer_logo_relative_env(monkeypatch):
     monkeypatch.setenv("SIFEN_ISSUER_LOGO_PATH", "assets/industria-feris-isotipo.jpg")

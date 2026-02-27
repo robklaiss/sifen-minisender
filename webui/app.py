@@ -3940,23 +3940,34 @@ def settings_page():
 
 def _resolve_issuer_logo_path() -> Tuple[Optional[Path], str]:
     raw = (os.getenv("SIFEN_ISSUER_LOGO_PATH") or "").strip()
+    details = []
+
     if raw:
-        p = Path(raw).expanduser()
-        if not p.is_absolute():
-            p = (_repo_root() / p).resolve()
+        env_path = Path(raw).expanduser()
+        if not env_path.is_absolute():
+            env_path = (_repo_root() / env_path).resolve()
             source = f"SIFEN_ISSUER_LOGO_PATH (rel:{raw})"
         else:
-            p = p.resolve()
+            env_path = env_path.resolve()
             source = "SIFEN_ISSUER_LOGO_PATH (abs)"
-    else:
-        p = (_repo_root() / "assets" / "industria-feris-isotipo.jpg").resolve()
-        source = "default assets/industria-feris-isotipo.jpg"
 
-    if not p.exists():
-        return None, f"{source} -> {p} (not found)"
-    if not p.is_file():
-        return None, f"{source} -> {p} (not a file)"
-    return p, f"{source} -> {p}"
+        if env_path.exists() and env_path.is_file():
+            return env_path, f"{source} -> {env_path}"
+        if not env_path.exists():
+            details.append(f"env path missing: {env_path}")
+        else:
+            details.append(f"env path not a file: {env_path}")
+
+    fallback = (_repo_root() / "assets" / "industria-feris-isotipo.jpg").resolve()
+    fallback_source = "default assets/industria-feris-isotipo.jpg"
+    if fallback.exists() and fallback.is_file():
+        return fallback, f"{fallback_source} -> {fallback}"
+    if not fallback.exists():
+        details.append(f"{fallback_source} -> {fallback} (not found)")
+    else:
+        details.append(f"{fallback_source} -> {fallback} (not a file)")
+
+    return None, "; ".join(details)
 
 @app.route("/assets/issuer-logo")
 @app.route("/issuer_logo")

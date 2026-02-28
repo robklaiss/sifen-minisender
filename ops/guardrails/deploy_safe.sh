@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+git config --global --add safe.directory "$(pwd)" || true
+
 bash ops/guardrails/pre_deploy_check.sh
 
 git pull --ff-only

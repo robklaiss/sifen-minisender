@@ -37,3 +37,7 @@ secrets/*
 
 # PROD runtime (no commitear)
 prod/
+
+# local-only
+/_snapshots/
+/responde

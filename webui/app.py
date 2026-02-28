@@ -27,9 +27,9 @@ import requests
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) in sys.path:
     sys.path.remove(str(SCRIPT_DIR))
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
 from app.pdf.invoice_renderer import render_invoice_pdf
 from app.sifen_client.xml_generator_v150 import generate_cdc
@@ -46,16 +46,14 @@ APP_TITLE = "SIFEN WebUI (SQLite)"
 def _resolve_db_path() -> str:
     raw = (
         (os.getenv("WEBUI_DB_PATH") or "").strip()
-        or (os.getenv("SIFEN_WEBUI_DB") or "").strip()
+        or (os.getenv("SIFEN_WEBUI_DB_PATH") or "").strip()
     )
     if raw:
         p = Path(raw).expanduser()
         if not p.is_absolute():
-            p = (REPO_ROOT / p).resolve()
-        else:
-            p = p.resolve()
-        return str(p)
-    return str((REPO_ROOT / "data" / "webui.db").resolve())
+            return str((BASE_DIR / p).resolve())
+        return str(p.resolve())
+    return str((BASE_DIR / "data" / "webui.db").resolve())
 
 
 DB_PATH = _resolve_db_path()
@@ -2720,7 +2718,7 @@ def _start_lote_sync_scheduler(interval_sec: int = 120) -> None:
     t.start()
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return BASE_DIR
 
 def _artifacts_root() -> Path:
     raw = (

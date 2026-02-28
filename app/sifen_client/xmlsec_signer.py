@@ -872,11 +872,17 @@ def sign_de_with_p12(xml_bytes: bytes, p12_path: str, p12_password: str) -> byte
     return out
 
 
-def sign_event_with_p12(xml_bytes: bytes, p12_path: str, p12_password: str) -> bytes:
+def sign_event_with_p12(
+    xml_bytes: bytes,
+    p12_path: str,
+    p12_password: str,
+    reference_uri: Optional[str] = None,
+) -> bytes:
     """
     Firma un XML de Evento SIFEN (gGroupGesEve) con XMLDSig usando python-xmlsec.
 
-    Espera un XML que contenga <rEve Id="..."> y firma ese Id.
+    Espera un XML que contenga <rEve Id="..."> y firma ese Id (por defecto).
+    Si reference_uri es "", la Reference se genera vacía (URI="").
     Inserta <Signature> como hermano de <rEve> dentro de <rGesEve>.
     """
     if not XMLSEC_AVAILABLE:
@@ -949,7 +955,8 @@ def sign_event_with_p12(xml_bytes: bytes, p12_path: str, p12_password: str) -> b
         sig_method.set("Algorithm", "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256")
 
         ref = etree.SubElement(signed_info, etree.QName(DS_NS, "Reference"))  # type: ignore
-        ref.set("URI", f"#{eve_id}")
+        ref_uri = f"#{eve_id}" if reference_uri is None else reference_uri
+        ref.set("URI", ref_uri)
 
         transforms = etree.SubElement(ref, etree.QName(DS_NS, "Transforms"))  # type: ignore
         transform1 = etree.SubElement(transforms, etree.QName(DS_NS, "Transform"))  # type: ignore

@@ -435,6 +435,28 @@ def _compute_cancel_deadline_and_remaining(
     remaining_seconds = int((deadline - now).total_seconds())
     return deadline.isoformat(timespec="seconds"), remaining_seconds
 
+def _validate_cancel_allowed(
+    inv_status: Optional[str],
+    issued_at: Optional[str],
+    now: Optional[datetime] = None,
+) -> Tuple[Optional[str], Optional[int]]:
+    deadline_iso, remaining_seconds = _compute_cancel_deadline_and_remaining(
+        issued_at,
+        now=now,
+    )
+    if remaining_seconds is None:
+        raise RuntimeError("No se pudo determinar fecha de emisión (issued_at).")
+    if remaining_seconds <= 0:
+        msg = "Cancelación fuera de plazo: excedió 24h desde la emisión (SIFEN)."
+        if deadline_iso is not None:
+            msg = f"{msg} deadline={deadline_iso} remaining={remaining_seconds}"
+        else:
+            msg = f"{msg} remaining={remaining_seconds}"
+        raise RuntimeError(msg)
+    if inv_status != "CONFIRMED_OK":
+        raise RuntimeError("Solo se puede cancelar un DE Aprobado (CONFIRMED_OK).")
+    return deadline_iso, remaining_seconds
+
 def _ensure_doc_number(con: sqlite3.Connection, inv: sqlite3.Row, invoice_id: int) -> str:
     doc_number = (inv["doc_number"] or "").strip() if "doc_number" in inv.keys() else ""
     if doc_number:
@@ -6005,6 +6027,11 @@ def invoice_cancel(invoice_id: int):
     ).fetchone()
     if not inv:
         abort(404)
+
+    try:
+        _validate_cancel_allowed(inv["status"], inv["issued_at"], now=datetime.now())
+    except RuntimeError as e:
+        abort(400, str(e))
 
     cdc = _extract_cdc_from_xml_path(inv["source_xml_path"] or "")
     if not cdc:

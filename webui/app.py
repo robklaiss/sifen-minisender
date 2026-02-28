@@ -1128,7 +1128,7 @@ def _build_cancel_event_xml(cdc: str, motivo: str, event_id: str) -> bytes:
     rEve = ET.SubElement(rGesEve, f"{{{ns_uri}}}rEve")
     rEve.set("Id", event_id)
     dFecFirma = ET.SubElement(rEve, f"{{{ns_uri}}}dFecFirma")
-    dFecFirma.text = sifen_timestamp()
+    dFecFirma.text = sifen_timestamp_no_offset()
     dVerFor = ET.SubElement(rEve, f"{{{ns_uri}}}dVerFor")
     dVerFor.text = "150"
     gGroupTiEvt = ET.SubElement(rEve, f"{{{ns_uri}}}gGroupTiEvt")
@@ -1157,7 +1157,7 @@ def _build_inutil_event_xml(
     rEve = ET.SubElement(rGesEve, f"{{{ns_uri}}}rEve")
     rEve.set("Id", event_id)
     dFecFirma = ET.SubElement(rEve, f"{{{ns_uri}}}dFecFirma")
-    dFecFirma.text = sifen_timestamp()
+    dFecFirma.text = sifen_timestamp_no_offset()
     dVerFor = ET.SubElement(rEve, f"{{{ns_uri}}}dVerFor")
     dVerFor.text = "150"
     gGroupTiEvt = ET.SubElement(rEve, f"{{{ns_uri}}}gGroupTiEvt")

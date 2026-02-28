@@ -1178,6 +1178,46 @@ def _sign_event_xml(xml_bytes: bytes) -> bytes:
         raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar evento.")
     return sign_event_with_p12(xml_bytes, p12_path, p12_password)
 
+
+def _normalize_dsig_prefix(xml_bytes: bytes) -> bytes:
+    dsig_ns = "http://www.w3.org/2000/09/xmldsig#"
+    if not xml_bytes:
+        return xml_bytes
+
+    parser = LET.XMLParser(remove_blank_text=False)
+    root = LET.fromstring(xml_bytes, parser=parser)
+    signature = root.find(f".//{{{dsig_ns}}}Signature")
+    if signature is None:
+        return xml_bytes
+    if signature.prefix == "ds":
+        return xml_bytes
+
+    def _build_nsmap(existing: dict) -> dict:
+        nsmap = {}
+        for prefix, uri in (existing or {}).items():
+            if uri == dsig_ns:
+                continue
+            nsmap[prefix] = uri
+        nsmap["ds"] = dsig_ns
+        return nsmap
+
+    new_sig = LET.Element(LET.QName(dsig_ns, "Signature"), nsmap=_build_nsmap(signature.nsmap))
+    new_sig.text = signature.text
+    new_sig.tail = signature.tail
+    new_sig.attrib.update(signature.attrib)
+    for child in list(signature):
+        signature.remove(child)
+        new_sig.append(child)
+
+    parent = signature.getparent()
+    if parent is None:
+        root = new_sig
+    else:
+        parent.replace(signature, new_sig)
+
+    xml_decl = xml_bytes.lstrip().startswith(b"<?xml")
+    return LET.tostring(root, xml_declaration=xml_decl, encoding="UTF-8", pretty_print=False)
+
 def _build_event_soap_bytes(signed_event_xml: str) -> bytes:
     soap_ns = "http://www.w3.org/2003/05/soap-envelope"
     sifen_ns = "http://ekuatia.set.gov.py/sifen/xsd"
@@ -1213,7 +1253,8 @@ def _send_cancel_event(
 
     # construir evento
     event_xml = _build_cancel_event_xml(cdc, motivo, event_id)
-    signed_event = _sign_event_xml(event_xml).decode("utf-8")
+    signed_event_bytes = _normalize_dsig_prefix(_sign_event_xml(event_xml))
+    signed_event = signed_event_bytes.decode("utf-8")
 
     # construir SOAP
     soap_bytes = _build_event_soap_bytes(signed_event)
@@ -1276,7 +1317,8 @@ def _send_inutil_event(
         event_id=event_id,
     )
 
-    signed_event = _sign_event_xml(event_xml).decode("utf-8")
+    signed_event_bytes = _normalize_dsig_prefix(_sign_event_xml(event_xml))
+    signed_event = signed_event_bytes.decode("utf-8")
 
     soap_bytes = _build_event_soap_bytes(signed_event)
 

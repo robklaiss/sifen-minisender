@@ -123,3 +123,10 @@ El script ejecuta:
 2. `docker compose build`
 3. `docker compose up -d`
 4. `docker compose logs -f --tail=200`
+
+## 8) Deploy seguro
+
+```bash
+cd /opt/sifen-minisender
+sudo bash ops/guardrails/deploy_safe.sh
+```

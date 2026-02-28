@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+
+if [[ "${PWD}" != "${REPO_ROOT}" ]]; then
+  echo "ERROR: Run this script from repo root: ${REPO_ROOT}" >&2
+  exit 3
+fi
+
+DB_PATH="data/webui.db"
+UPLOAD_LOGO="data/uploads/issuer-logo.jpg"
+BASE_URL="http://127.0.0.1:8000"
+
+if [[ ! -s "${DB_PATH}" ]]; then
+  echo "ERROR: Missing or empty database: ${DB_PATH}" >&2
+  exit 1
+fi
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "ERROR: sqlite3 not found. Install sqlite3 to run pre-deploy checks." >&2
+  exit 2
+fi
+
+invoice_count="$(sqlite3 "${DB_PATH}" "SELECT COUNT(*) FROM invoices;")"
+if [[ ! "${invoice_count}" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: Unexpected invoice count: ${invoice_count}" >&2
+  exit 10
+fi
+if [[ "${invoice_count}" -lt 1 ]]; then
+  echo "ERROR: invoices table is empty (count=${invoice_count})." >&2
+  exit 10
+fi
+
+if [[ ! -f "${UPLOAD_LOGO}" ]]; then
+  echo "ERROR: Missing issuer logo: ${UPLOAD_LOGO}" >&2
+  exit 11
+fi
+
+check_http() {
+  local path="$1"
+  local name="$2"
+  local url="${BASE_URL}${path}"
+  local code=""
+  local i
+
+  for i in $(seq 1 10); do
+    code="$(curl -s -o /dev/null -w "%{http_code}" "${url}" || true)"
+    if [[ "${code}" == "200" ]]; then
+      echo "OK: ${name} (${path}) -> ${code}"
+      return 0
+    fi
+    echo "WARN: ${name} (${path}) attempt ${i}/10 -> ${code}"
+    sleep 1
+  done
+
+  echo "ERROR: ${name} (${path}) expected 200, got ${code}" >&2
+  return 1
+}
+
+check_http "/health" "health"
+check_http "/invoices" "invoices"
+check_http "/assets/issuer-logo" "issuer-logo"
+
+echo "OK: pre-deploy checks passed."

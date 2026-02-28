@@ -11,3 +11,10 @@ def test_event_post_url_strips_wsdl_suffix():
     post_url = _event_post_url(wsdl_url)
     assert post_url == "https://example.test/de/ws/eventos/evento"
     assert not post_url.endswith(".wsdl")
+
+
+def test_event_post_url_strips_wsdl_querystring():
+    wsdl_url = "https://example.test/de/ws/eventos/evento.wsdl?wsdl"
+    post_url = _event_post_url(wsdl_url)
+    assert post_url == "https://example.test/de/ws/eventos/evento.wsdl"
+    assert "?" not in post_url

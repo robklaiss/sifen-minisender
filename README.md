@@ -157,6 +157,20 @@ make test
 make check-env
 ```
 
+## Dev
+
+Habilitar hook opcional pre-push:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Ejecución manual de guardrails:
+
+```bash
+./scripts/pre_push_guardrail.sh
+```
+
 ### Envío y consulta
 
 Enviar a test (usa `latest` por defecto):

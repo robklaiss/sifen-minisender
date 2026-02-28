@@ -8,7 +8,7 @@ import hashlib
 import base64
 import re
 
-from app.sifen_client.utils import sifen_timestamp
+from app.sifen_client.utils import sifen_timestamp_no_offset
 
 _SIFEN_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
 
@@ -159,10 +159,10 @@ def create_rde_xml_v150(
         XML como string
     """
     if fecha is None or hora is None:
-        ts = sifen_timestamp()
+        ts = sifen_timestamp_no_offset()
     else:
         # Normalizar fecha/hora al formato SIFEN sin offset
-        ts = sifen_timestamp(f"{fecha}T{hora}")
+        ts = sifen_timestamp_no_offset(f"{fecha}T{hora}")
 
     ts = _ensure_sifen_ts(ts, "create_rde_xml_v150")
     fecha = ts[:10]

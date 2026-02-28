@@ -88,14 +88,30 @@ def _normalize_sifen_dt(dt: Optional[Union[datetime, date, str]] = None) -> date
 
 def sifen_timestamp(dt: Optional[Union[datetime, date, str]] = None) -> str:
     """
+    Timestamp SIFEN con offset: YYYY-MM-DDTHH:MM:SS-03:00 en America/Asuncion.
+    """
+    if isinstance(dt, str):
+        local_dt = _parse_sifen_timestamp_str(dt)
+    else:
+        local_dt = _normalize_sifen_dt(dt)
+
+    local_dt = local_dt.replace(microsecond=0).astimezone(_SIFEN_TZ)
+    result = local_dt.isoformat(timespec="seconds")
+    if not _SIFEN_TS_OFFSET_RE.fullmatch(result):
+        raise ValueError(f"Timestamp SIFEN inválido: {result!r}")
+    return result
+
+
+def sifen_timestamp_no_offset(dt: Optional[Union[datetime, date, str]] = None) -> str:
+    """
     Timestamp SIFEN sin offset: YYYY-MM-DDTHH:MM:SS en America/Asuncion.
     """
     if isinstance(dt, str):
         local_dt = _parse_sifen_timestamp_str(dt)
-        local_dt = local_dt.replace(microsecond=0)
     else:
         local_dt = _normalize_sifen_dt(dt)
 
+    local_dt = local_dt.replace(microsecond=0).astimezone(_SIFEN_TZ)
     result = local_dt.strftime(_SIFEN_TS_FMT)
     if not _SIFEN_TS_RE.fullmatch(result):
         raise ValueError(f"Timestamp SIFEN inválido: {result!r}")

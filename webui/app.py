@@ -44,11 +44,12 @@ from app.sifen_client.xmlsec_signer import sign_de_with_p12, sign_event_with_p12
 from app.sifen_client.config import get_sifen_config
 from app.sifen_client.soap_client import SoapClient
 from app.sifen_client.cdc_utils import calc_dv_mod11
-from app.sifen_client.utils import sifen_timestamp
+from app.sifen_client.utils import sifen_timestamp, sifen_timestamp_no_offset
 from sifen_minisender.core_send import send_lote_from_xml
 
 APP_TITLE = "SIFEN WebUI (SQLite)"
 _SIFEN_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+_SIFEN_TS_OFFSET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$")
 
 
 def _resolve_db_path() -> str:
@@ -1194,6 +1195,8 @@ def _build_event_soap_bytes(signed_event_xml: str) -> bytes:
 
 
 def _event_post_url(wsdl_url: str) -> str:
+    if "?wsdl" in wsdl_url:
+        return wsdl_url.split("?", 1)[0]
     return wsdl_url[:-5] if wsdl_url.endswith(".wsdl") else wsdl_url
 
 def _send_cancel_event(
@@ -1640,6 +1643,10 @@ def _build_invoice_xml_from_template(
         if _SIFEN_TS_RE.fullmatch(issue_dt_local):
             dt = datetime.fromisoformat(issue_dt_local).replace(tzinfo=ZoneInfo("UTC"))
             issue_dt_local = dt.astimezone(ZoneInfo("America/Asuncion"))
+        elif _SIFEN_TS_OFFSET_RE.fullmatch(issue_dt_local):
+            issue_dt_local = datetime.fromisoformat(issue_dt_local).astimezone(
+                ZoneInfo("America/Asuncion")
+            )
     if isinstance(issue_dt_local, datetime) and issue_dt_local.tzinfo is None:
         issue_dt_local = issue_dt_local.replace(tzinfo=ZoneInfo("UTC")).astimezone(
             ZoneInfo("America/Asuncion")
@@ -1652,7 +1659,7 @@ def _build_invoice_xml_from_template(
         if issue_dt_local is None:
             issue_dt_local = datetime.now(ZoneInfo("America/Asuncion"))
         issue_dt_local = issue_dt_local - timedelta(seconds=ts_skew)
-    iso = _ensure_sifen_ts(sifen_timestamp(issue_dt_local), "build_invoice_xml")
+    iso = _ensure_sifen_ts(sifen_timestamp_no_offset(issue_dt_local), "build_invoice_xml")
     now = datetime.fromisoformat(iso)
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)
     _update_text(root, ".//s:dFecFirma", iso, ns)

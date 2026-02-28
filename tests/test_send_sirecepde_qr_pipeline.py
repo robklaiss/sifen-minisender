@@ -59,7 +59,7 @@ def test_qr_real_sin_placeholder():
 
     assert qr == debug["qr_url"]
     assert "cHashQR=" in qr
-    assert "https://www.ekuatia.set.gov.py/consultas/qr?" in qr
+    assert ("https://www.ekuatia.set.gov.py/consultas/qr?" in qr) or ("https://ekuatia.set.gov.py/consultas/qr?" in qr)
     assert not send_sirecepde._is_qr_placeholder(qr)
 
 

@@ -13,19 +13,19 @@ DB_PATH="data/webui.db"
 UPLOAD_LOGO="data/uploads/issuer-logo.jpg"
 BASE_URL="http://127.0.0.1:8000"
 
-if [[ ! -s "${DB_PATH}" ]]; then
-  echo "ERROR: Missing or empty database: ${DB_PATH}" >&2
-  exit 1
-fi
-
 if ! command -v sqlite3 >/dev/null 2>&1; then
   echo "ERROR: sqlite3 not found. Install sqlite3 to run pre-deploy checks." >&2
   exit 2
 fi
 
-invoice_count="$(sqlite3 "${DB_PATH}" "SELECT COUNT(*) FROM invoices;")"
-if [[ ! "${invoice_count}" =~ ^[0-9]+$ ]]; then
-  echo "ERROR: Unexpected invoice count: ${invoice_count}" >&2
+if [[ ! -f "${DB_PATH}" ]]; then
+  echo "ERROR: Missing database file: ${DB_PATH}. Create/restore it before deploy." >&2
+  exit 10
+fi
+
+invoice_count="$(sqlite3 "${DB_PATH}" "SELECT COUNT(*) FROM invoices;" 2>/dev/null || true)"
+if [[ -z "${invoice_count}" || ! "${invoice_count}" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: Unable to read invoices count from ${DB_PATH}. Ensure it is a valid DB with the invoices table." >&2
   exit 10
 fi
 if [[ "${invoice_count}" -lt 1 ]]; then
@@ -34,8 +34,22 @@ if [[ "${invoice_count}" -lt 1 ]]; then
 fi
 
 if [[ ! -f "${UPLOAD_LOGO}" ]]; then
-  echo "ERROR: Missing issuer logo: ${UPLOAD_LOGO}" >&2
+  echo "ERROR: Missing issuer logo file: ${UPLOAD_LOGO}. Add it before deploy." >&2
   exit 11
+fi
+if [[ ! -s "${UPLOAD_LOGO}" ]]; then
+  echo "ERROR: Issuer logo is empty: ${UPLOAD_LOGO}. Replace it with a non-empty file." >&2
+  exit 11
+fi
+
+if ! docker compose exec -T web sh -lc 'test -s /app/data/webui.db'; then
+  echo "ERROR: Container cannot see non-empty /app/data/webui.db. Verify volume mounts and file permissions (do not auto-fix here)." >&2
+  exit 12
+fi
+
+if ! docker compose exec -T web sh -lc 'test -s /app/data/uploads/issuer-logo.jpg'; then
+  echo "ERROR: Container cannot see non-empty /app/data/uploads/issuer-logo.jpg. Verify volume mounts and file permissions (do not auto-fix here)." >&2
+  exit 13
 fi
 
 retry_http_200() {

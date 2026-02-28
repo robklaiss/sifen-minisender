@@ -58,6 +58,31 @@ def _resolve_db_path() -> str:
 
 DB_PATH = _resolve_db_path()
 
+
+def _resolve_uploads_dir() -> Path:
+    raw = (os.getenv("WEBUI_UPLOADS_DIR") or "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = (BASE_DIR / p).resolve()
+        else:
+            p = p.resolve()
+        return p
+    return (BASE_DIR / "data" / "uploads").resolve()
+
+
+UPLOADS_DIR = _resolve_uploads_dir()
+
+
+def _ensure_uploads_dir() -> None:
+    base_data = (BASE_DIR / "data").resolve()
+    target = UPLOADS_DIR
+    try:
+        if target == base_data or base_data in target.parents:
+            target.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
 app = Flask(__name__)
 
 DOC_TYPE_MAP = {
@@ -209,6 +234,7 @@ def close_db(_exc):
         con.close()
 
 def init_db():
+    _ensure_uploads_dir()
     con = get_db()
     con.executescript(
         """
@@ -3188,6 +3214,26 @@ def _find_default_cdc_and_prot() -> tuple[str, str]:
     prot = row["sifen_prot_cons_lote"] or ""
     return cdc, prot
 
+
+def _issuer_logo_candidates() -> list[tuple[Path, str]]:
+    _ensure_uploads_dir()
+    uploads = UPLOADS_DIR
+    return [
+        (uploads / "issuer-logo.jpg", "image/jpeg"),
+        (uploads / "issuer-logo.png", "image/png"),
+        (_repo_root() / "assets" / "industria-feris-isotipo.jpg", "image/jpeg"),
+    ]
+
+
+def _find_issuer_logo() -> tuple[Optional[Path], Optional[str]]:
+    for path, mimetype in _issuer_logo_candidates():
+        try:
+            if path.exists():
+                return path, mimetype
+        except Exception:
+            continue
+    return None, None
+
 def _diagnostics_dry_run() -> dict:
     results = {}
     diag_warnings: list[str] = []
@@ -3527,15 +3573,16 @@ def settings_page():
 
 @app.route("/assets/issuer-logo")
 def issuer_logo():
-    path = (os.getenv("SIFEN_ISSUER_LOGO_PATH") or "").strip()
-    if not path:
-        path = str(_repo_root() / "temp" / "industria-feris-isotipo.jpg")
-    p = Path(path)
-    if not p.is_absolute():
-        p = (_repo_root() / p).resolve()
-    if not p.exists():
-        abort(404)
-    resp = send_file(p, mimetype="image/jpeg", as_attachment=False)
+    path, mimetype = _find_issuer_logo()
+    if not path or not mimetype:
+        abort(
+            404,
+            description=(
+                "Issuer logo not found. Expected data/uploads/issuer-logo.jpg "
+                "or assets/industria-feris-isotipo.jpg."
+            ),
+        )
+    resp = send_file(path, mimetype=mimetype, as_attachment=False)
     resp.headers["Cache-Control"] = "public, max-age=3600"
     return resp
 

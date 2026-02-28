@@ -6,7 +6,7 @@ echo "== full-check: invoice ${INVOICE_ID} =="
 
 echo
 echo "== 1) smoke (dry-run XSD) =="
-sudo ./scripts/smoke.sh "${INVOICE_ID}"
+./scripts/smoke.sh "${INVOICE_ID}"
 
 echo
 echo "== 2) invariants (CDC/DV/QR/PYG/order) =="

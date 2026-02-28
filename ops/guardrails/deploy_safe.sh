@@ -14,3 +14,6 @@ docker compose restart web
 bash ops/guardrails/pre_deploy_check.sh
 
 echo "OK: deploy_safe completed."
+
+# Post-deploy: smoke iTiDE (5 docs)
+bash ops/guardrails/smoke_itide.sh

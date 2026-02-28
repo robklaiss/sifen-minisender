@@ -309,55 +309,58 @@ CREATE TABLE IF NOT EXISTS customers (
         CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
         """
     )
-        # Migraciones ligeras (SQLite): agregar columnas si faltan
-    cols = {row['name'] for row in con.execute("PRAGMA table_info(invoices)")}
-    if 'source_xml_path' not in cols:
+    # Migraciones ligeras (SQLite): agregar columnas si faltan
+    def _column_exists(con, table: str, column: str) -> bool:
+        rows = con.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(r[1] == column for r in rows)  # r[1] es name
+
+    if not _column_exists(con, "invoices", "source_xml_path"):
         con.execute("ALTER TABLE invoices ADD COLUMN source_xml_path TEXT")
-    if 'last_artifacts_dir' not in cols:
+    if not _column_exists(con, "invoices", "last_artifacts_dir"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_artifacts_dir TEXT")
-    if 'pdf_path' not in cols:
+    if not _column_exists(con, "invoices", "pdf_path"):
         con.execute("ALTER TABLE invoices ADD COLUMN pdf_path TEXT")
-    if 'email_status' not in cols:
+    if not _column_exists(con, "invoices", "email_status"):
         con.execute("ALTER TABLE invoices ADD COLUMN email_status TEXT")
-    if 'last_sifen_est' not in cols:
+    if not _column_exists(con, "invoices", "last_sifen_est"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_sifen_est TEXT")
-    if 'last_sifen_prot_aut' not in cols:
+    if not _column_exists(con, "invoices", "last_sifen_prot_aut"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_sifen_prot_aut TEXT")
-    if 'last_lote_code' not in cols:
+    if not _column_exists(con, "invoices", "last_lote_code"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_lote_code TEXT")
-    if 'last_lote_msg' not in cols:
+    if not _column_exists(con, "invoices", "last_lote_msg"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_lote_msg TEXT")
-    if 'sifen_env' not in cols:
+    if not _column_exists(con, "invoices", "sifen_env"):
         con.execute("ALTER TABLE invoices ADD COLUMN sifen_env TEXT")
-    if 'doc_number' not in cols:
+    if not _column_exists(con, "invoices", "doc_number"):
         con.execute("ALTER TABLE invoices ADD COLUMN doc_number TEXT")
-    if 'signed_at' not in cols:
+    if not _column_exists(con, "invoices", "signed_at"):
         con.execute("ALTER TABLE invoices ADD COLUMN signed_at TEXT")
-    if 'codseg' not in cols:
+    if not _column_exists(con, "invoices", "codseg"):
         con.execute("ALTER TABLE invoices ADD COLUMN codseg TEXT")
-    if 'establishment' not in cols:
+    if not _column_exists(con, "invoices", "establishment"):
         con.execute("ALTER TABLE invoices ADD COLUMN establishment TEXT")
-    if 'point_exp' not in cols:
+    if not _column_exists(con, "invoices", "point_exp"):
         con.execute("ALTER TABLE invoices ADD COLUMN point_exp TEXT")
-    if 'doc_type' not in cols:
+    if not _column_exists(con, "invoices", "doc_type"):
         con.execute("ALTER TABLE invoices ADD COLUMN doc_type TEXT DEFAULT '1'")
-    if 'doc_extra_json' not in cols:
+    if not _column_exists(con, "invoices", "doc_extra_json"):
         con.execute("ALTER TABLE invoices ADD COLUMN doc_extra_json TEXT")
-    if 'last_event_type' not in cols:
+    if not _column_exists(con, "invoices", "last_event_type"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_type TEXT")
-    if 'last_event_id' not in cols:
+    if not _column_exists(con, "invoices", "last_event_id"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_id TEXT")
-    if 'last_event_est' not in cols:
+    if not _column_exists(con, "invoices", "last_event_est"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_est TEXT")
-    if 'last_event_code' not in cols:
+    if not _column_exists(con, "invoices", "last_event_code"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_code TEXT")
-    if 'last_event_msg' not in cols:
+    if not _column_exists(con, "invoices", "last_event_msg"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_msg TEXT")
-    if 'last_event_prot_aut' not in cols:
+    if not _column_exists(con, "invoices", "last_event_prot_aut"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_prot_aut TEXT")
-    if 'last_event_at' not in cols:
+    if not _column_exists(con, "invoices", "last_event_at"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_at TEXT")
-    if 'last_event_artifacts_dir' not in cols:
+    if not _column_exists(con, "invoices", "last_event_artifacts_dir"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_artifacts_dir TEXT")
     con.commit()
 

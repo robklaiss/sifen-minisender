@@ -38,29 +38,29 @@ if [[ ! -f "${UPLOAD_LOGO}" ]]; then
   exit 11
 fi
 
-check_http() {
-  local path="$1"
-  local name="$2"
-  local url="${BASE_URL}${path}"
+retry_http_200() {
+  local url="$1"
+  local tries="${2:-15}"
+  local sleep_sec="${3:-1}"
   local code=""
   local i
 
-  for i in $(seq 1 10); do
-    code="$(curl -s -o /dev/null -w "%{http_code}" "${url}" || true)"
+  for i in $(seq 1 "${tries}"); do
+    code="$(curl -sS -o /dev/null -w "%{http_code}" "${url}" || true)"
     if [[ "${code}" == "200" ]]; then
-      echo "OK: ${name} (${path}) -> ${code}"
+      echo "OK: ${url} -> ${code}"
       return 0
     fi
-    echo "WARN: ${name} (${path}) attempt ${i}/10 -> ${code}"
-    sleep 1
+    echo "WAIT ${url} -> ${code} (try ${i}/${tries})"
+    sleep "${sleep_sec}"
   done
 
-  echo "ERROR: ${name} (${path}) expected 200, got ${code}" >&2
+  echo "FAIL ${url} -> ${code}" >&2
   return 1
 }
 
-check_http "/health" "health"
-check_http "/invoices" "invoices"
-check_http "/assets/issuer-logo" "issuer-logo"
+retry_http_200 "${BASE_URL}/health" 15 1
+retry_http_200 "${BASE_URL}/invoices" 15 1
+retry_http_200 "${BASE_URL}/assets/issuer-logo" 15 1
 
 echo "OK: pre-deploy checks passed."

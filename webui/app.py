@@ -1176,7 +1176,7 @@ def _sign_event_xml(xml_bytes: bytes) -> bytes:
     p12_password = os.getenv("SIFEN_SIGN_P12_PASSWORD") or os.getenv("SIFEN_P12_PASSWORD") or os.getenv("SIFEN_CERT_PASSWORD")
     if not p12_path or not p12_password:
         raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar evento.")
-    return sign_event_with_p12(xml_bytes, p12_path, p12_password)
+    return sign_event_with_p12(xml_bytes, p12_path, p12_password, reference_uri="")
 
 
 def _normalize_dsig_prefix(xml_bytes: bytes) -> bytes:

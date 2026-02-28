@@ -1231,7 +1231,7 @@ def _build_event_soap_bytes(signed_event_xml: str) -> bytes:
     devreg = LET.SubElement(root, f"{{{sifen_ns}}}dEvReg")
     devreg.append(LET.fromstring(signed_event_xml.encode("utf-8")))
 
-    return LET.tostring(envelope, xml_declaration=False, encoding="UTF-8", pretty_print=False)
+    return LET.tostring(envelope, xml_declaration=True, encoding="UTF-8", pretty_print=False)
 
 
 def _event_post_url(wsdl_url: str) -> str:

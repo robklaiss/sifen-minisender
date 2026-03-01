@@ -14,7 +14,9 @@ import random
 import zipfile
 from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
-from datetime import datetime, date
+from datetime import datetime, date, timezone
+from zoneinfo import ZoneInfo
+from xml.sax.saxutils import escape as xml_escape
 from flask import Flask, g, request, redirect, url_for, render_template_string, abort, send_file, jsonify, send_from_directory
 from pathlib import Path
 from typing import Optional
@@ -41,6 +43,9 @@ from app.sifen_client.xsd_validator import validate_de_xml_against_xsd
 from sifen_minisender.core_send import send_lote_from_xml
 
 APP_TITLE = "SIFEN WebUI (SQLite)"
+SIFEN_NS = "http://ekuatia.set.gov.py/sifen/xsd"
+SOAP_NS = "http://www.w3.org/2003/05/soap-envelope"
+DS_NS = "http://www.w3.org/2000/09/xmldsig#"
 
 
 def _resolve_db_path() -> str:
@@ -218,13 +223,20 @@ _BOOTSTRAPPED = False
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
         Path(DB_PATH).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(DB_PATH)
+        try:
+            con = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to connect SQLite DB at {DB_PATH}") from exc
         con.row_factory = sqlite3.Row
-        con.execute("PRAGMA foreign_keys = ON;")
-        con.execute("PRAGMA journal_mode = WAL;")
-        con.execute("PRAGMA synchronous = FULL;")
-        con.execute("PRAGMA busy_timeout = 5000;")
         g.db = con
+        con.execute("PRAGMA foreign_keys = ON;")
+        con.execute("PRAGMA busy_timeout = 10000;")
+        try:
+            con.execute("PRAGMA journal_mode = WAL;")
+        except Exception:
+            # Si está locked durante arranque/concurrencia, no rompas la app
+            pass
+        con.execute("PRAGMA synchronous = FULL;")
     return g.db
 
 @app.teardown_appcontext
@@ -861,13 +873,21 @@ def _next_doc_number(con: sqlite3.Connection, invoice_id: int, est: str = "", pu
         return dnum
     return str(invoice_id).zfill(7)
 
-def _make_event_id() -> str:
-    base = datetime.now().strftime("%Y%m%d%H%M%S")
-    return (base + str(random.randint(0, 9)))[-10:]
+def _asuncion_timestamp() -> str:
+    tz = ZoneInfo("America/Asuncion")
+    return datetime.now(tz).strftime("%Y-%m-%dT%H:%M:%S")
 
 def _make_did_15() -> str:
-    base = datetime.now().strftime("%Y%m%d%H%M%S")
-    return base + str(random.randint(0, 9))
+    return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+def _make_event_id_from_did(did: str) -> str:
+    eve_id = (did or "")[-10:]
+    eve_id = eve_id.lstrip("0") or "1"
+    return eve_id
+
+def _make_event_ids() -> tuple[str, str]:
+    did = _make_did_15()
+    return did, _make_event_id_from_did(did)
 
 def _zfill_digits(value: Optional[str], width: int) -> str:
     raw = "" if value is None else str(value)
@@ -914,25 +934,101 @@ def _extract_inutil_defaults_from_xml_path(xml_path: str) -> dict:
     return defaults
 
 def _build_cancel_event_xml(cdc: str, motivo: str, event_id: str) -> bytes:
-    ns_uri = "http://ekuatia.set.gov.py/sifen/xsd"
-    ET.register_namespace("", ns_uri)
-    root = ET.Element(f"{{{ns_uri}}}gGroupGesEve")
-    rGesEve = ET.SubElement(root, f"{{{ns_uri}}}rGesEve")
-    rEve = ET.SubElement(rGesEve, f"{{{ns_uri}}}rEve")
-    rEve.set("Id", event_id)
-    dFecFirma = ET.SubElement(rEve, f"{{{ns_uri}}}dFecFirma")
-    dFecFirma.text = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    dVerFor = ET.SubElement(rEve, f"{{{ns_uri}}}dVerFor")
-    dVerFor.text = "150"
-    dTiGDE = ET.SubElement(rEve, f"{{{ns_uri}}}dTiGDE")
-    dTiGDE.text = "1"
-    gGroupTiEvt = ET.SubElement(rEve, f"{{{ns_uri}}}gGroupTiEvt")
-    rGeVeCan = ET.SubElement(gGroupTiEvt, f"{{{ns_uri}}}rGeVeCan")
-    cdc_el = ET.SubElement(rGeVeCan, f"{{{ns_uri}}}Id")
-    cdc_el.text = cdc
-    mot = ET.SubElement(rGeVeCan, f"{{{ns_uri}}}mOtEve")
-    mot.text = motivo
-    return ET.tostring(root, encoding="utf-8", method="xml")
+    if len(cdc) != 44:
+        raise RuntimeError(f"CDC debe tener 44 caracteres. Tiene: {len(cdc)}")
+    if not event_id or not event_id.isdigit():
+        raise RuntimeError("rEve@Id debe ser numérico.")
+
+    ts = _asuncion_timestamp()
+    motivo_xml = xml_escape(motivo or "")
+    cdc_xml = xml_escape(cdc)
+
+    xml_text = f"""<gGroupGesEve xmlns="{SIFEN_NS}"
+              xmlns:ds="{DS_NS}"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="{SIFEN_NS} siRecepEvento_v150.xsd">
+  <rGesEve xsi:schemaLocation="{SIFEN_NS} siRecepEvento_v150.xsd">
+    <rEve Id="{event_id}">
+      <dFecFirma>{ts}</dFecFirma>
+      <dVerFor>150</dVerFor>
+      <gGroupTiEvt>
+        <rGeVeCan>
+          <Id>{cdc_xml}</Id>
+          <mOtEve>{motivo_xml}</mOtEve>
+        </rGeVeCan>
+      </gGroupTiEvt>
+    </rEve>
+  </rGesEve>
+</gGroupGesEve>
+"""
+    return xml_text.encode("utf-8")
+
+def _strip_xml_decl(xml_text: str) -> str:
+    return re.sub(r"^\\s*<\\?xml[^>]*\\?>", "", xml_text).lstrip()
+
+def _build_event_soap(did: str, signed_event_xml: str) -> bytes:
+    payload = _strip_xml_decl(signed_event_xml).strip()
+    soap_text = f"""<soap:Envelope xmlns:soap="{SOAP_NS}" xmlns:xsd="{SIFEN_NS}">
+  <soap:Body>
+    <xsd:rEnviEventoDe>
+      <xsd:dId>{did}</xsd:dId>
+      <xsd:dEvReg>
+{payload}
+      </xsd:dEvReg>
+    </xsd:rEnviEventoDe>
+  </soap:Body>
+</soap:Envelope>
+"""
+    return soap_text.encode("utf-8")
+
+def _local_name(tag: str) -> str:
+    return tag.split("}", 1)[-1] if "}" in tag else tag
+
+def _guardrail_signed_event_xml(signed_event_xml: str, event_id: str) -> None:
+    try:
+        root = ET.fromstring(signed_event_xml)
+    except Exception as exc:
+        raise RuntimeError(f"XML firmado inválido: {exc}") from exc
+
+    if _local_name(root.tag) != "gGroupGesEve":
+        raise RuntimeError("XML firmado debe tener raíz gGroupGesEve.")
+
+    rGesEve = None
+    for child in root.iter():
+        if _local_name(child.tag) == "rGesEve":
+            rGesEve = child
+            break
+    if rGesEve is None:
+        raise RuntimeError("XML firmado sin rGesEve.")
+
+    rEve = None
+    sig = None
+    for child in list(rGesEve):
+        if _local_name(child.tag) == "rEve":
+            rEve = child
+        elif _local_name(child.tag) == "Signature":
+            sig = child
+    if rEve is None:
+        raise RuntimeError("XML firmado sin rEve.")
+    if sig is None:
+        raise RuntimeError("XML firmado sin Signature como hermana de rEve.")
+    if list(rGesEve).index(sig) <= list(rGesEve).index(rEve):
+        raise RuntimeError("Signature debe estar después de rEve dentro de rGesEve.")
+
+    eve_id = rEve.get("Id") or rEve.get("id") or ""
+    if eve_id != event_id:
+        raise RuntimeError("rEve@Id no coincide con event_id esperado.")
+
+    ref = None
+    for node in sig.iter():
+        if _local_name(node.tag) == "Reference":
+            ref = node
+            break
+    if ref is None:
+        raise RuntimeError("Signature sin Reference.")
+    uri = ref.get("URI") or ""
+    if uri != f"#{event_id}":
+        raise RuntimeError("Reference URI no coincide con rEve@Id.")
 
 def _build_inutil_event_xml(
     *,
@@ -945,14 +1041,14 @@ def _build_inutil_event_xml(
     motivo: str,
     event_id: str,
 ) -> bytes:
-    ns_uri = "http://ekuatia.set.gov.py/sifen/xsd"
+    ns_uri = SIFEN_NS
     ET.register_namespace("", ns_uri)
     root = ET.Element(f"{{{ns_uri}}}gGroupGesEve")
     rGesEve = ET.SubElement(root, f"{{{ns_uri}}}rGesEve")
     rEve = ET.SubElement(rGesEve, f"{{{ns_uri}}}rEve")
     rEve.set("Id", event_id)
     dFecFirma = ET.SubElement(rEve, f"{{{ns_uri}}}dFecFirma")
-    dFecFirma.text = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    dFecFirma.text = _asuncion_timestamp()
     dVerFor = ET.SubElement(rEve, f"{{{ns_uri}}}dVerFor")
     dVerFor.text = "150"
     dTiGDE = ET.SubElement(rEve, f"{{{ns_uri}}}dTiGDE")
@@ -974,6 +1070,7 @@ def _send_cancel_event(
     cdc: str,
     motivo: str,
     event_id: str,
+    did: str,
     artifacts_root: Path,
 ) -> dict:
     cfg = get_sifen_config(env=env)
@@ -987,20 +1084,10 @@ def _send_cancel_event(
         raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar evento.")
 
     signed_event = sign_event_with_p12(event_xml, p12_path, p12_password).decode("utf-8")
+    _guardrail_signed_event_xml(signed_event, event_id)
 
-    # construir SOAP
-    soap_ns = "http://www.w3.org/2003/05/soap-envelope"
-    sifen_ns = "http://ekuatia.set.gov.py/sifen/xsd"
-    envelope = ET.Element(f"{{{soap_ns}}}Envelope")
-    ET.SubElement(envelope, f"{{{soap_ns}}}Header")
-    body = ET.SubElement(envelope, f"{{{soap_ns}}}Body")
-    root = ET.SubElement(body, f"{{{sifen_ns}}}rEnviEventoDe")
-    did = ET.SubElement(root, f"{{{sifen_ns}}}dId")
-    did.text = _make_did_15()
-    devreg = ET.SubElement(root, f"{{{sifen_ns}}}dEvReg")
-    devreg.append(ET.fromstring(signed_event))
-
-    soap_bytes = ET.tostring(envelope, encoding="utf-8", method="xml")
+    # construir SOAP (xsd: wrapper, sin xml declaration dentro del Body)
+    soap_bytes = _build_event_soap(did, signed_event)
 
     # POST con mTLS
     cert_path = os.getenv("SIFEN_CERT_PATH") or ""
@@ -1037,6 +1124,7 @@ def _send_inutil_event(
     tipo_doc: str,
     motivo: str,
     event_id: str,
+    did: str,
     artifacts_root: Path,
 ) -> dict:
     cfg = get_sifen_config(env=env)
@@ -1059,19 +1147,9 @@ def _send_inutil_event(
         raise RuntimeError("Faltan SIFEN_SIGN_P12_PATH/SIFEN_SIGN_P12_PASSWORD (o equivalentes) para firmar evento.")
 
     signed_event = sign_event_with_p12(event_xml, p12_path, p12_password).decode("utf-8")
+    _guardrail_signed_event_xml(signed_event, event_id)
 
-    soap_ns = "http://www.w3.org/2003/05/soap-envelope"
-    sifen_ns = "http://ekuatia.set.gov.py/sifen/xsd"
-    envelope = ET.Element(f"{{{soap_ns}}}Envelope")
-    ET.SubElement(envelope, f"{{{soap_ns}}}Header")
-    body = ET.SubElement(envelope, f"{{{soap_ns}}}Body")
-    root = ET.SubElement(body, f"{{{sifen_ns}}}rEnviEventoDe")
-    did = ET.SubElement(root, f"{{{sifen_ns}}}dId")
-    did.text = _make_did_15()
-    devreg = ET.SubElement(root, f"{{{sifen_ns}}}dEvReg")
-    devreg.append(ET.fromstring(signed_event))
-
-    soap_bytes = ET.tostring(envelope, encoding="utf-8", method="xml")
+    soap_bytes = _build_event_soap(did, signed_event)
 
     cert_path = os.getenv("SIFEN_CERT_PATH") or ""
     key_path = os.getenv("SIFEN_KEY_PATH") or ""
@@ -2852,25 +2930,72 @@ def _artifact_links_for_dir(run_dir: Optional[str]) -> dict:
     return links
 
 
+def _row_get(row: Optional[sqlite3.Row], key: str, default=None):
+    if row is None:
+        return default
+    try:
+        if isinstance(row, sqlite3.Row):
+            return row[key] if key in row.keys() else default
+        if isinstance(row, dict):
+            return row.get(key, default)
+    except Exception:
+        return default
+    return default
+
+
+def _table_columns(con: sqlite3.Connection, table: str) -> set:
+    try:
+        if table not in {"invoices", "customers"}:
+            return set()
+        safe_table = table.replace("'", "''")
+        rows = con.execute(f"PRAGMA table_info('{safe_table}')").fetchall()
+    except Exception:
+        return set()
+    return {r[1] for r in rows}
+
+
 def _invoice_api_dict(row: sqlite3.Row) -> dict:
+    last_sifen_code = _row_get(row, "last_sifen_code")
+    last_lote_code = _row_get(row, "last_lote_code")
+    last_event_code = _row_get(row, "last_event_code")
+    last_sifen_msg = _row_get(row, "last_sifen_msg")
+    last_lote_msg = _row_get(row, "last_lote_msg")
+    last_event_msg = _row_get(row, "last_event_msg")
+    last_code = last_sifen_code or last_lote_code or last_event_code
+    last_message = last_sifen_msg or last_lote_msg or last_event_msg
+    sifen_status = _row_get(row, "last_sifen_est") or _row_get(row, "last_event_est")
     return {
-        "id": row["id"],
-        "status": row["status"],
-        "created_at": row["created_at"],
-        "issued_at": row["issued_at"],
-        "queued_at": row["queued_at"],
-        "sent_at": row["sent_at"],
-        "confirmed_at": row["confirmed_at"],
-        "sifen_env": row["sifen_env"],
-        "sifen_prot_cons_lote": row["sifen_prot_cons_lote"],
-        "last_lote_code": row["last_lote_code"],
-        "last_lote_msg": row["last_lote_msg"],
-        "last_sifen_code": row["last_sifen_code"],
-        "last_sifen_msg": row["last_sifen_msg"],
-        "last_sifen_est": row["last_sifen_est"],
-        "last_sifen_prot_aut": row["last_sifen_prot_aut"],
-        "source_xml_path": row["source_xml_path"],
-        "last_artifacts_dir": row["last_artifacts_dir"],
+        "id": _row_get(row, "id"),
+        "customer_id": _row_get(row, "customer_id"),
+        "customer_name": _row_get(row, "customer_name"),
+        "customer_ruc": _row_get(row, "customer_ruc"),
+        "customer_dv": _row_get(row, "customer_dv"),
+        "customer_doc_id": _row_get(row, "customer_doc_id"),
+        "customer_email": _row_get(row, "customer_email"),
+        "customer_phone": _row_get(row, "customer_phone"),
+        "status": _row_get(row, "status"),
+        "created_at": _row_get(row, "created_at"),
+        "issued_at": _row_get(row, "issued_at"),
+        "emitted_at": _row_get(row, "issued_at") or _row_get(row, "emitted_at"),
+        "queued_at": _row_get(row, "queued_at"),
+        "sent_at": _row_get(row, "sent_at"),
+        "confirmed_at": _row_get(row, "confirmed_at"),
+        "sifen_env": _row_get(row, "sifen_env"),
+        "sifen_prot_cons_lote": _row_get(row, "sifen_prot_cons_lote"),
+        "last_lote_code": last_lote_code,
+        "last_lote_msg": last_lote_msg,
+        "last_sifen_code": last_sifen_code,
+        "last_sifen_msg": last_sifen_msg,
+        "last_sifen_est": _row_get(row, "last_sifen_est"),
+        "last_sifen_prot_aut": _row_get(row, "last_sifen_prot_aut"),
+        "last_event_code": last_event_code,
+        "last_event_msg": last_event_msg,
+        "last_event_est": _row_get(row, "last_event_est"),
+        "last_code": last_code,
+        "last_message": last_message,
+        "sifen_status": sifen_status,
+        "source_xml_path": _row_get(row, "source_xml_path"),
+        "last_artifacts_dir": _row_get(row, "last_artifacts_dir"),
     }
 
 def _latest_send_lote_run() -> Optional[dict]:
@@ -3942,6 +4067,133 @@ def api_runs():
     return jsonify({"items": items, "count": len(items), "limit": limit})
 
 
+@app.route("/api/invoices", methods=["GET"])
+def api_invoices():
+    init_db()
+    con = get_db()
+    try:
+        try:
+            limit = int((request.args.get("limit") or "200").strip())
+        except Exception:
+            limit = 200
+        limit = max(1, min(limit, 1000))
+
+        try:
+            offset = int((request.args.get("offset") or "0").strip())
+        except Exception:
+            offset = 0
+        offset = max(0, offset)
+
+        invoice_cols = _table_columns(con, "invoices")
+        customer_cols = _table_columns(con, "customers")
+
+        select_parts = ["i.*"]
+        customer_selects = []
+        if "name" in customer_cols:
+            customer_selects.append("c.name AS customer_name")
+        if "ruc" in customer_cols:
+            customer_selects.append("c.ruc AS customer_ruc")
+        if "dv" in customer_cols:
+            customer_selects.append("c.dv AS customer_dv")
+        if "doc_id" in customer_cols:
+            customer_selects.append("c.doc_id AS customer_doc_id")
+        if "email" in customer_cols:
+            customer_selects.append("c.email AS customer_email")
+        if "phone" in customer_cols:
+            customer_selects.append("c.phone AS customer_phone")
+
+        join_clause = ""
+        if customer_selects:
+            select_parts.extend(customer_selects)
+            join_clause = "LEFT JOIN customers c ON c.id=i.customer_id"
+
+        if "created_at" in invoice_cols:
+            order_clause = "ORDER BY i.created_at DESC, i.id DESC"
+        else:
+            order_clause = "ORDER BY i.id DESC"
+
+        rows = con.execute(
+            f"""
+            SELECT {", ".join(select_parts)}
+            FROM invoices i
+            {join_clause}
+            {order_clause}
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+
+        items = [_invoice_api_dict(row) for row in rows]
+        resp = jsonify(items)
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["X-Total-Count"] = str(len(items))
+        return resp
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/customers", methods=["GET"])
+def api_customers():
+    init_db()
+    con = get_db()
+    try:
+        try:
+            limit = int((request.args.get("limit") or "500").strip())
+        except Exception:
+            limit = 500
+        limit = max(1, min(limit, 2000))
+
+        try:
+            offset = int((request.args.get("offset") or "0").strip())
+        except Exception:
+            offset = 0
+        offset = max(0, offset)
+
+        customer_cols = _table_columns(con, "customers")
+        base_cols = ["id", "name", "ruc", "dv", "doc_id", "email", "phone", "created_at"]
+        select_cols = [f"c.{col}" for col in base_cols if col in customer_cols]
+        if not select_cols:
+            select_cols = ["c.*"]
+
+        rows = con.execute(
+            f"""
+            SELECT {", ".join(select_cols)}
+            FROM customers c
+            ORDER BY c.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+
+        items = []
+        for row in rows:
+            ruc = _row_get(row, "ruc")
+            dv = _row_get(row, "dv")
+            if dv is None and ruc:
+                parts = str(ruc).split("-")
+                if len(parts) >= 2 and parts[-1]:
+                    dv = parts[-1]
+            item = {
+                "id": _row_get(row, "id"),
+                "name": _row_get(row, "name"),
+                "ruc": ruc,
+                "dv": dv,
+                "doc_id": _row_get(row, "doc_id"),
+            }
+            for key in ("email", "phone", "created_at"):
+                val = _row_get(row, key)
+                if val is not None:
+                    item[key] = val
+            items.append(item)
+
+        resp = jsonify(items)
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["X-Total-Count"] = str(len(items))
+        return resp
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/api/runs/latest-lote", methods=["GET"])
 def api_runs_latest_lote():
     latest_run = _latest_send_lote_run()
@@ -3979,6 +4231,136 @@ def api_invoice_artifacts(invoice_id: int):
             "source_xml_path": inv["source_xml_path"],
             "last_artifacts": _artifact_links_for_dir(inv["last_artifacts_dir"]),
             "last_event_artifacts": _artifact_links_for_dir(inv["last_event_artifacts_dir"]),
+        }
+    )
+
+
+@app.route("/api/invoices/<int:invoice_id>/event/cancel", methods=["POST"])
+def api_invoice_cancel_event(invoice_id: int):
+    init_db()
+    con = get_db()
+    payload = request.get_json(silent=True) or request.form or {}
+
+    env = (payload.get("env") or get_setting("default_env", "prod") or "prod").strip().lower()
+    if env not in ("test", "prod"):
+        return jsonify({"error": "env inválido (usar test|prod)"}), 400
+
+    confirm = (payload.get("confirm_emit") or "").strip().upper()
+    if env == "prod" and confirm != "YES":
+        return jsonify({"error": "confirmación requerida para PROD"}), 400
+
+    motivo = (payload.get("motivo") or "").strip()
+    motivo_preset = (payload.get("motivo_preset") or "").strip()
+    if not motivo and motivo_preset:
+        motivo = motivo_preset
+    if len(motivo) < 5 or len(motivo) > 500:
+        return jsonify({"error": "motivo inválido (5-500 caracteres)"}), 400
+
+    inv = con.execute(
+        """
+        SELECT i.*, c.name AS customer_name, c.ruc AS customer_ruc, c.email AS customer_email
+        FROM invoices i JOIN customers c ON c.id=i.customer_id
+        WHERE i.id=?
+        """,
+        (invoice_id,),
+    ).fetchone()
+    if not inv:
+        return jsonify({"error": "invoice not found"}), 404
+
+    doc_type = normalize_doc_type(inv["doc_type"])
+    if doc_type != "1":
+        return (
+            jsonify(
+                {
+                    "error": "cancel_event_not_allowed",
+                    "detail": f"Cancelación solo habilitada para iTiDE=1. Documento iTiDE={doc_type}.",
+                }
+            ),
+            400,
+        )
+
+    cdc = _extract_cdc_from_xml_path(inv["source_xml_path"] or "")
+    if not cdc or len(cdc) != 44:
+        return (
+            jsonify(
+                {
+                    "error": "cdc_not_found",
+                    "detail": "CDC no encontrado (44). Primero emití y aprobá/firmá el documento.",
+                }
+            ),
+            400,
+        )
+
+    did, event_id = _make_event_ids()
+    try:
+        parsed = _send_cancel_event(
+            env=env,
+            cdc=cdc,
+            motivo=motivo,
+            event_id=event_id,
+            did=did,
+            artifacts_root=_artifacts_root(),
+        )
+    except Exception as e:
+        con.execute(
+            "UPDATE invoices SET last_event_type=?, last_event_msg=?, last_event_at=? WHERE id=?",
+            ("cancel", f"ERROR: {e}", now_iso(), invoice_id),
+        )
+        con.commit()
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    est = parsed.get("dEstRes") or ""
+    code = parsed.get("dCodRes") or ""
+    msg = (parsed.get("dMsgRes") or "").strip()
+    prot_aut = parsed.get("dProtAut") or ""
+    http_status = parsed.get("http_status")
+    if http_status:
+        msg = (msg + f" | http={http_status}").strip()
+
+    new_status = inv["status"]
+    if est.lower().startswith("aprob"):
+        new_status = "CANCELLED_OK"
+    elif est.lower().startswith("rech"):
+        new_status = "CANCELLED_REJECTED"
+
+    con.execute(
+        """
+        UPDATE invoices SET
+            status=?,
+            last_event_type=?,
+            last_event_id=?,
+            last_event_est=?,
+            last_event_code=?,
+            last_event_msg=?,
+            last_event_prot_aut=?,
+            last_event_at=?,
+            last_event_artifacts_dir=?
+        WHERE id=?
+        """,
+        (
+            new_status,
+            "cancel",
+            event_id,
+            est or None,
+            code or None,
+            msg or None,
+            prot_aut or None,
+            now_iso(),
+            parsed.get("artifacts_dir") or None,
+            invoice_id,
+        ),
+    )
+    con.commit()
+
+    ok = (code == "0600") or est.lower().startswith("aprob")
+    return jsonify(
+        {
+            "ok": ok,
+            "dEstRes": est,
+            "dCodRes": code,
+            "dMsgRes": msg,
+            "dProtAut": prot_aut,
+            "event_id": event_id,
         }
     )
 
@@ -5093,7 +5475,8 @@ def invoice_detail(invoice_id: int):
                   Artifacts evento: <span class="mono">{{ inv.last_event_artifacts_dir or "—" }}</span>
                 </div>
 
-                <form method="post" action="{{ url_for('invoice_cancel', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center">
+                {% if doc_type == "1" %}
+                <form method="post" action="{{ url_for('invoice_cancel', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center js-cancel-event" data-invoice-id="{{ inv.id }}">
                   <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
                     <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
                     <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
@@ -5111,6 +5494,15 @@ def invoice_detail(invoice_id: int):
                   <input class="form-control form-control-sm" name="motivo" style="min-width: 260px;" placeholder="Motivo cancelación (5-500)">
                   <button class="btn btn-sm btn-danger" type="submit">Cancelar</button>
                 </form>
+                <div class="small mt-1 text-muted" id="cancel-result-{{inv.id}}"></div>
+                {% else %}
+                <div class="d-flex gap-2 flex-wrap align-items-center">
+                  <button class="btn btn-sm btn-danger" type="button" disabled title="Cancelación disponible solo para iTiDE=1 (por ahora)">
+                    Cancelar
+                  </button>
+                  <span class="small text-muted">Cancelación disponible solo para iTiDE=1 (por ahora).</span>
+                </div>
+                {% endif %}
 
                 <form method="post" action="{{ url_for('invoice_inutil', invoice_id=inv.id) }}" class="mt-2">
                   <div class="row g-2 align-items-end">
@@ -5171,6 +5563,58 @@ def invoice_detail(invoice_id: int):
                     </div>
                   </div>
                 </form>
+
+                <script>
+                  (function () {
+                    document.querySelectorAll(".js-cancel-event").forEach((form) => {
+                      form.addEventListener("submit", async function (ev) {
+                        ev.preventDefault();
+                        const invoiceId = form.getAttribute("data-invoice-id");
+                        const resultEl = document.getElementById(`cancel-result-${invoiceId}`);
+                        if (resultEl) {
+                          resultEl.textContent = "Enviando cancelación...";
+                          resultEl.classList.remove("text-danger");
+                        }
+
+                        const data = new FormData(form);
+                        const payload = {
+                          env: data.get("env"),
+                          confirm_emit: data.get("confirm_emit") || "",
+                          motivo: data.get("motivo") || "",
+                          motivo_preset: data.get("motivo_preset") || "",
+                        };
+
+                        try {
+                          const res = await fetch(`/api/invoices/${invoiceId}/event/cancel`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload),
+                          });
+                          const out = await res.json();
+                          if (!res.ok) {
+                            throw new Error(out.detail || out.error || "Error al cancelar");
+                          }
+                          const msg = [
+                            out.dEstRes ? `Estado=${out.dEstRes}` : null,
+                            out.dCodRes ? `Código=${out.dCodRes}` : null,
+                            out.dMsgRes ? `Mensaje=${out.dMsgRes}` : null,
+                            out.dProtAut ? `Prot=${out.dProtAut}` : null,
+                            out.event_id ? `EventID=${out.event_id}` : null,
+                          ].filter(Boolean).join(" | ");
+                          if (resultEl) {
+                            resultEl.textContent = msg || "Cancelación enviada.";
+                            resultEl.classList.remove("text-danger");
+                          }
+                        } catch (err) {
+                          if (resultEl) {
+                            resultEl.textContent = err.message || "Error al cancelar";
+                            resultEl.classList.add("text-danger");
+                          }
+                        }
+                      });
+                    });
+                  })();
+                </script>
 
                 <hr>
                 <h6>Integración minisender (MVP)</h6>
@@ -5283,6 +5727,7 @@ def invoice_detail(invoice_id: int):
         lines=lines,
         badge=badge,
         doc_type_label=doc_type_label,
+        doc_type=doc_type,
         cdc=cdc,
         inutil_defaults=inutil_defaults,
         extra_prefill=extra_prefill,
@@ -5583,17 +6028,22 @@ def invoice_cancel(invoice_id: int):
     if not inv:
         abort(404)
 
-    cdc = _extract_cdc_from_xml_path(inv["source_xml_path"] or "")
-    if not cdc:
-        abort(400, "No se pudo obtener CDC desde source_xml_path. Guardá el XML firmado primero.")
+    doc_type = normalize_doc_type(inv["doc_type"])
+    if doc_type != "1":
+        abort(400, f"Cancelación solo habilitada para iTiDE=1. Documento iTiDE={doc_type}.")
 
-    event_id = _make_event_id()
+    cdc = _extract_cdc_from_xml_path(inv["source_xml_path"] or "")
+    if not cdc or len(cdc) != 44:
+        abort(400, "No se pudo obtener CDC válido (44) desde source_xml_path. Primero emití y aprobá/firmá el documento.")
+
+    did, event_id = _make_event_ids()
     try:
         parsed = _send_cancel_event(
             env=env,
             cdc=cdc,
             motivo=motivo,
             event_id=event_id,
+            did=did,
             artifacts_root=_artifacts_root(),
         )
     except Exception as e:
@@ -5687,7 +6137,7 @@ def invoice_inutil(invoice_id: int):
     if not inv:
         abort(404)
 
-    event_id = _make_event_id()
+    did, event_id = _make_event_ids()
     try:
         parsed = _send_inutil_event(
             env=env,
@@ -5699,6 +6149,7 @@ def invoice_inutil(invoice_id: int):
             tipo_doc=tipo_doc,
             motivo=motivo,
             event_id=event_id,
+            did=did,
             artifacts_root=_artifacts_root(),
         )
     except Exception as e:

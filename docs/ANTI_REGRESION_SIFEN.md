@@ -55,6 +55,19 @@ Reglas de oro:
 
 ---
 
+## Evento Cancelación (iTiDE=1)
+
+### Guardrail 2026-03-01 — Cancelación de eventos (estructura + iTiDE=1)
+- Síntoma: 0160 XML Mal Formado al cancelar
+- Causa: firmar rEnviEventoDe completo / Signature mal ubicada / CDC incorrecto
+- Reglas:
+  1) Firmar gGroupGesEve
+  2) Signature hermana de rEve
+  3) CDC 44 chars
+  4) Solo iTiDE=1
+  5) Endpoint PROD usa .wsdl
+- Señal de éxito: dCodRes=0600 + dEstRes=Aprobado + dProtAut presente
+
 ## Evento Cancelación
 
 ### Guardrail 2026-03-01 — Cancelación eventos (0160 → 0600 Aprobado)
@@ -71,7 +84,7 @@ Reglas de oro:
 2. `Signature` como hermano de `rEve` dentro de `rGesEve`.
 3. CDC con **44 caracteres exactos**.
 4. `rEve@Id` numérico y consistente con `Reference URI="#<Id>"` (Id derivado de `DID`).
-5. Endpoint de eventos en `.wsdl` (PROD/TEST).
+5. Endpoint de eventos: PROD usa `.wsdl` (TEST usa `/evento`).
 
 **Señal de éxito**
 - `dEstRes=Aprobado`, `dCodRes=0600`, `dMsgRes=Evento registrado correctamente`, `dProtAut` presente.
@@ -198,6 +211,47 @@ Reglas de oro:
 - [ ] Regla: no pegar bloques largos en la terminal.
   - **Síntoma**: fragmentos inyectados/rotos que dañan scripts/heredocs.
   - **Causa**: pegado masivo en terminal interactiva.
+
+---
+
+## Guardrail 2026-03-01 — UI requiere `/api/invoices` y `/api/customers`
+
+**Síntoma**
+- La UI muestra “no hay facturas / no hay clientes” aunque la DB SQLite tiene datos.
+- `GET /api/invoices` o `GET /api/customers` devolvía `404`.
+
+**Causa real**
+- Faltaban los endpoints REST de listado que el frontend consume.
+
+**Fix aplicado**
+- Agregar `GET /api/invoices` y `GET /api/customers` en `webui/app.py`.
+- Respuesta JSON con campos mínimos y tolerancia a columnas faltantes.
+
+**Smoke test**
+- `curl -fsS http://127.0.0.1:8000/api/invoices | head`
+- `curl -fsS http://127.0.0.1:8000/api/customers | head`
+- Abrir `/invoices` y confirmar que aparecen registros.
+
+---
+
+## Guardrail 2026-03-01 — SQLite WAL/PRAGMA no debe crashar WebUI
+
+**Síntoma**
+- `sqlite3.OperationalError: database is locked`
+- `AttributeError: db`
+
+**Causa real**
+- PRAGMA `journal_mode=WAL` se ejecuta durante arranque con DB bloqueada y `g.db` no quedó seteado.
+
+**Fix aplicado**
+- `PRAGMA busy_timeout = 10000` antes de WAL.
+- `PRAGMA journal_mode = WAL` tolerante (try/except).
+- `g.db` seteado inmediatamente tras abrir conexión.
+
+**Señal de éxito**
+- `curl -fsS http://127.0.0.1:8000/invoices | head`
+- `curl -fsS http://127.0.0.1:8000/api/invoices | head`
+- Logs sin “database is locked” ni “AttributeError: db”.
   - **Fix**: crear scripts en `scripts/` y ejecutarlos.
   - **Guardrail automático**: usar creación de script con heredoc corto y ejecutar con `bash`.
   - **Ejemplo**:

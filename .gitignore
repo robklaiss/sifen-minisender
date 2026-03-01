@@ -41,3 +41,4 @@ prod/
 # local-only
 /_snapshots/
 /responde
+tools/_legacy/

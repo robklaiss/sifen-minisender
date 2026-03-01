@@ -55,6 +55,204 @@ Reglas de oro:
 
 ---
 
+## Evento Cancelación
+
+### Guardrail 2026-03-01 — Cancelación eventos (0160 → 0600 Aprobado)
+
+**Síntoma**
+- `dCodRes=0160` “XML Mal Formado” al enviar eventos de cancelación.
+
+**Causa real**
+- Se firmaba y enviaba el `rEnviEventoDe` completo dentro del SOAP.
+- SIFEN exige **firmar** el `gGroupGesEve/rGesEve` y que la `Signature` sea **hermana** de `rEve`.
+
+**Reglas obligatorias**
+1. Firmar `gGroupGesEve` (no `rEnviEventoDe`).
+2. `Signature` como hermano de `rEve` dentro de `rGesEve`.
+3. CDC con **44 caracteres exactos**.
+4. `rEve@Id` numérico y consistente con `Reference URI="#<Id>"` (Id derivado de `DID`).
+5. Endpoint de eventos en `.wsdl` (PROD/TEST).
+
+**Señal de éxito**
+- `dEstRes=Aprobado`, `dCodRes=0600`, `dMsgRes=Evento registrado correctamente`, `dProtAut` presente.
+
+- [ ] Regla: en eventos (cancelación/inutilización/etc) el XML **a firmar** debe ser `gGroupGesEve` y **no** `rEnviEventoDe`.
+  - **Síntoma**: `0160 XML Mal Formado` en POST de eventos aunque XSD/firma parezcan correctos.
+  - **Causa**: se firmó/envió como raíz el `rEnviEventoDe` dentro del SOAP.
+  - **Fix**: firmar `gGroupGesEve` y dejar que el SOAP envuelva con `rEnviEventoDe` por fuera.
+  - **Guardrail automático**: abortar si el XML firmado tiene raíz `rEnviEventoDe` o si `Signature` no es hermano de `rEve`.
+  - **Ejemplo**:
+
+    ```xml
+    <gGroupGesEve xmlns="http://ekuatia.set.gov.py/sifen/xsd">
+      <rGesEve>
+        <rEve Id="1234567890">...</rEve>
+        <ds:Signature>...</ds:Signature>
+      </rGesEve>
+    </gGroupGesEve>
+    ```
+
+- [ ] Regla: `rEve@Id` debe ser **numérico** y consistente con `Reference URI="#<Id>"`.
+  - **Síntoma**: rechazo remoto o referencia inválida aun con firma local OK.
+  - **Causa**: `Id` no numérico o desalineado con la referencia.
+  - **Fix**: derivar `Id` numérico y asegurar el mismo valor en `Reference URI`.
+  - **Guardrail automático**: validar `rEve@Id` con regex `^[0-9]+$` y coincidencia exacta con `Reference URI`.
+  - **Ejemplo**:
+
+    ```xml
+    <rEve Id="1234567890">...</rEve>
+    <Reference URI="#1234567890">...</Reference>
+    ```
+
+- [ ] Regla: `<rGeVeCan><Id>` debe ser el CDC completo de **exactamente 44 caracteres**.
+  - **Síntoma**: SIFEN responde `dCodRes=0160` “XML Mal Formado” aunque XSD/firma parezcan correctos.
+  - **Causa**: se envía un CDC truncado o incompleto en el `Id` de cancelación.
+  - **Fix**: validar longitud 44 antes de construir/enviar el XML.
+  - **Guardrail automático**: abortar el envío si `${#CDC} != 44` en el script de cancelación.
+  - **Ejemplo**:
+
+    ```xml
+    <rGeVeCan>
+      <Id>01234567890123456789012345678901234567890123</Id>
+    </rGeVeCan>
+    ```
+
+- [ ] Regla: `dFecFirma` debe ir como `YYYY-MM-DDThh:mm:ss` **sin timezone/offset**.
+  - **Síntoma**: falla validación XSD local o rechazo remoto.
+  - **Causa**: timestamp con `-03:00` u otro offset.
+  - **Fix**: generar la fecha de firma sin sufijo de zona horaria.
+  - **Guardrail automático**: validar que `dFecFirma` no contenga `Z` ni `+/-HH:MM`.
+  - **Ejemplo**:
+
+    ```xml
+    <dFecFirma>2026-03-01T10:20:30</dFecFirma>
+    <!-- No usar: 2026-03-01T10:20:30-03:00 -->
+    ```
+
+- [ ] Regla: XMLDSig debe firmar sobre `rEve` (atributo `Id`) con `Reference URI="#<Id>"`.
+  - **Síntoma**: firma “ok” localmente pero rechazo remoto o error de referencia.
+  - **Causa**: referencia al nodo equivocado o uso de transform incorrecto.
+  - **Fix**: `Reference URI` al `Id` de `rEve`, canonicalización `exc-c14n`, firma `RSA-SHA256`.
+  - **Guardrail automático**: verificación local con `xmlsec1` antes de enviar.
+  - **Ejemplo**:
+
+    ```xml
+    <rEve Id="ID123">
+      ...
+    </rEve>
+    <Reference URI="#ID123">
+      <Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+    </Reference>
+    ```
+
+    ```bash
+    xmlsec1 --verify --id-attr:Id rEve \
+      --trusted-pem certs/root.pem --untrusted-pem certs/issuer.pem \
+      tmp/signed.xml
+    ```
+
+  - **Nota**: si `Signature` está **fuera** de `rEve` (detached), **no** usar transform `enveloped-signature`.
+
+## Firma/Cert Chain
+
+- [ ] Regla: la cadena de certificados debe incluir issuer y root (no solo leaf).
+  - **Síntoma**: `xmlsec1` falla con “unable to get local issuer certificate”.
+  - **Causa**: PEM con solo el certificado leaf.
+  - **Fix**: obtener `issuer` y `root`, y verificar cadena.
+  - **Guardrail automático**: si `xmlsec1` falla por issuer, reintentar agregando `--untrusted-pem` y `--trusted-pem`.
+  - **Ejemplo**:
+
+    ```bash
+    openssl verify -CAfile certs/root.pem \
+      -untrusted certs/issuer.pem certs/leaf.pem
+    ```
+
+## Transporte/Gateway
+
+- [ ] Regla: `X-Backside-Transport: FAIL FAIL` indica problema de gateway/backside routing.
+  - **Síntoma**: `HTTP 400` + `Content-Type: text/html` + `FAIL FAIL` aun con XML validado y firma verificada.
+  - **Causa**: ruta/ACL/policy de gateway bloqueando el POST.
+  - **Fix**: confirmar endpoint/ruta habilitada para POST antes de seguir “adivinando XML”.
+  - **Guardrail automático**: si el header contiene `FAIL FAIL`, abortar y pedir verificación de ruta/policies.
+  - **Ejemplo**:
+
+    ```bash
+    curl -i -X POST "$ENDPOINT" --data @tmp/signed.xml \
+      -H "Content-Type: text/xml"
+    ```
+
+- [ ] Regla: WSDL accesible no implica POST habilitado.
+  - **Síntoma**: `GET` WSDL responde `200` con `X-Backside-Transport: OK OK`, pero `POST` devuelve `FAIL FAIL`.
+  - **Causa**: políticas del gateway permiten WSDL pero bloquean POST.
+  - **Fix**: coordinar con infra/soporte para habilitar POST o usar endpoint alternativo.
+  - **Guardrail automático**: preflight que compara `GET` WSDL y `POST` al endpoint; si divergen, detener.
+  - **Ejemplo**:
+
+    ```bash
+    curl -I "$WSDL_URL" | rg "Backside-Transport"
+    curl -i -X POST "$ENDPOINT" --data @tmp/signed.xml
+    ```
+
+## Debug/Operación
+
+- [ ] Regla: no pegar bloques largos en la terminal.
+  - **Síntoma**: fragmentos inyectados/rotos que dañan scripts/heredocs.
+  - **Causa**: pegado masivo en terminal interactiva.
+  - **Fix**: crear scripts en `scripts/` y ejecutarlos.
+  - **Guardrail automático**: usar creación de script con heredoc corto y ejecutar con `bash`.
+  - **Ejemplo**:
+
+    ```bash
+    cat > scripts/cancel_send.sh <<'SH'
+    set -euo pipefail
+    bash scripts/build_cancel_xml.sh
+    bash scripts/post_cancel.sh
+    SH
+    bash scripts/cancel_send.sh
+    ```
+
+- [ ] Regla: trazas HTTP deterministas con `curl`.
+  - **Síntoma**: difícil reproducir errores o comparar requests.
+  - **Causa**: falta de headers y trace guardados.
+  - **Fix**: usar `--dump-header` y `--trace-ascii` en `tmp/` (relativo al repo).
+  - **Guardrail automático**: en scripts de envío, siempre registrar headers/trace cuando `DEBUG=1`.
+  - **Ejemplo**:
+
+    ```bash
+    mkdir -p tmp
+    curl -sS -X POST "$ENDPOINT" --data @tmp/signed.xml \
+      --dump-header tmp/headers.txt --trace-ascii tmp/trace.txt
+    ```
+
+- [ ] Regla: primero DEV/TEST, luego PROD.
+  - **Síntoma**: pruebas repetidas en PROD y ruido operativo.
+  - **Causa**: falta de separación clara de entornos.
+  - **Fix**: validar cambios en DEV/TEST antes de tocar PROD.
+  - **Guardrail automático**: requerir flag explícito `--prod` y mostrar warning si no está.
+  - **Ejemplo**:
+
+    ```bash
+    if [ "${ENV}" = "prod" ] && [ "${ALLOW_PROD:-}" != "1" ]; then
+      echo "Refuse: set ALLOW_PROD=1"; exit 1
+    fi
+    ```
+
+### Checklist antes de enviar cancelación (máx 10)
+
+- [ ] XML firmado tiene raíz `gGroupGesEve` (no `rEnviEventoDe`).
+- [ ] `Signature` es hermano de `rEve` dentro de `rGesEve`.
+- [ ] `rEve@Id` numérico y coincide con `Reference URI`.
+- [ ] `CDC` tiene 44 caracteres exactos.
+- [ ] `dFecFirma` sin timezone/offset.
+- [ ] `Reference URI` apunta al `Id` de `rEve`.
+- [ ] Canonicalización `exc-c14n` y firma `RSA-SHA256`.
+- [ ] Verificación `xmlsec1` OK con `root/issuer`.
+- [ ] Cadena de certs verificada con `openssl verify`.
+- [ ] `X-Backside-Transport` no indica `FAIL FAIL`.
+- [ ] Endpoint POST validado (WSDL OK no basta).
+- [ ] Envío con `curl` guardando headers/trace en `tmp/`.
+- [ ] Pruebas en DEV/TEST completadas antes de PROD.
+
 ## Plantilla (copiar/pegar para un nuevo guardrail)
 
 ## Guardrail YYYY-MM-DD — Título corto (componente / norma / endpoint)
@@ -97,4 +295,3 @@ COMANDO:
 6. Antes de cualquier deploy:
    - Ejecutar: `./scripts/full_check.sh 5`
    - No desplegar si falla.
-

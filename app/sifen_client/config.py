@@ -199,7 +199,7 @@ class SifenConfig:
         "test": {
             "recibe": "https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl",
             "recibe_lote": "https://sifen-test.set.gov.py/de/ws/async/recibe-lote.wsdl",
-            "evento": "https://sifen-test.set.gov.py/de/ws/eventos/evento.wsdl",
+            "evento": "https://sifen-test.set.gov.py/de/ws/eventos/evento",
             "consulta_lote": "https://sifen-test.set.gov.py/de/ws/consultas-lote/consulta-lote.wsdl",
             "consulta_ruc": "https://sifen-test.set.gov.py/de/ws/consultas/consulta-ruc.wsdl",
             "consulta": "https://sifen-test.set.gov.py/de/ws/consultas/consulta.wsdl",
@@ -314,6 +314,14 @@ class SifenConfig:
         # Permitir override por env var para consulta_lote
         if service_key == "consulta_lote":
             override_url = os.getenv("SIFEN_WSDL_CONSULTA_LOTE")
+            if override_url:
+                return override_url
+
+        if service_key == "evento":
+            override_key = (
+                "SIFEN_EVENT_ENDPOINT_TEST" if self.env == self.ENV_TEST else "SIFEN_EVENT_ENDPOINT_PROD"
+            )
+            override_url = os.getenv(override_key)
             if override_url:
                 return override_url
         

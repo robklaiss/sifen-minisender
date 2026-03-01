@@ -964,6 +964,12 @@ def sign_event_with_p12(xml_bytes: bytes, p12_path: str, p12_password: str) -> b
 
     tree = root.getroottree()
 
+    try:
+        if etree.QName(root).localname != "gGroupGesEve":
+            raise XMLSecError("XML de evento debe tener raíz gGroupGesEve.")
+    except Exception as e:
+        raise XMLSecError(f"Error validando raíz de evento: {e}")
+
     # limpiar prefijo ds si existe
     etree.cleanup_namespaces(tree)  # type: ignore
 
@@ -998,12 +1004,12 @@ def sign_event_with_p12(xml_bytes: bytes, p12_path: str, p12_password: str) -> b
         raise XMLSecError("xmlsec no está disponible")
     xmlsec.tree.add_ids(tree, ["Id"])  # type: ignore
 
-    # construir Signature manual sin prefijo
+    # construir Signature manual con prefijo ds:
     try:
-        sig = etree.Element(etree.QName(DS_NS, "Signature"), nsmap={None: DS_NS})  # type: ignore
+        sig = etree.Element(etree.QName(DS_NS, "Signature"), nsmap={"ds": DS_NS})  # type: ignore
         signed_info = etree.SubElement(sig, etree.QName(DS_NS, "SignedInfo"))  # type: ignore
         canon_method = etree.SubElement(signed_info, etree.QName(DS_NS, "CanonicalizationMethod"))  # type: ignore
-        canon_method.set("Algorithm", "http://www.w3.org/2001/10/xml-exc-c14n#")
+        canon_method.set("Algorithm", "http://www.w3.org/TR/2001/REC-xml-c14n-20010315")
 
         sig_method = etree.SubElement(signed_info, etree.QName(DS_NS, "SignatureMethod"))  # type: ignore
         sig_method.set("Algorithm", "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256")
@@ -1033,6 +1039,11 @@ def sign_event_with_p12(xml_bytes: bytes, p12_path: str, p12_password: str) -> b
     parent = eve.getparent()
     if parent is None:
         raise XMLSecError("rEve no tiene parent")
+    try:
+        if etree.QName(parent).localname != "rGesEve":
+            raise XMLSecError("rEve debe ser hijo directo de rGesEve")
+    except Exception as e:
+        raise XMLSecError(f"Error validando parent de rEve: {e}")
     try:
         idx = list(parent).index(eve)
         parent.insert(idx + 1, sig)

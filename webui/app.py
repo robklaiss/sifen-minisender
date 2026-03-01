@@ -50,8 +50,9 @@ DS_NS = "http://www.w3.org/2000/09/xmldsig#"
 
 def _resolve_db_path() -> str:
     raw = (
-        (os.getenv("WEBUI_DB_PATH") or "").strip()
+        (os.getenv("SIFEN_WEBUI_DB") or "").strip()
         or (os.getenv("SIFEN_WEBUI_DB_PATH") or "").strip()
+        or (os.getenv("WEBUI_DB_PATH") or "").strip()
     )
     if raw:
         p = Path(raw).expanduser()
@@ -222,6 +223,10 @@ _BOOTSTRAPPED = False
 # -------------------------
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
+        global DB_PATH
+        resolved = _resolve_db_path()
+        if resolved != DB_PATH:
+            DB_PATH = resolved
         Path(DB_PATH).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
         try:
             con = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)

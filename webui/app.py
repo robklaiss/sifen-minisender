@@ -969,17 +969,21 @@ def _build_cancel_event_xml(cdc: str, motivo: str, event_id: str) -> bytes:
     return xml_text.encode("utf-8")
 
 def _strip_xml_decl(xml_text: str) -> str:
-    return re.sub(r"^\\s*<\\?xml[^>]*\\?>", "", xml_text).lstrip()
+    # Quitar BOM + XML declaration real (si viene embebido)
+    xml_text = (xml_text or "").lstrip("\ufeff")
+    xml_text = re.sub(r"^\s*<\?xml[^>]*\?>\s*", "", xml_text)
+    return xml_text.lstrip()
 
 def _build_event_soap(did: str, signed_event_xml: str) -> bytes:
     payload = _strip_xml_decl(signed_event_xml).strip()
+    payload = payload.replace("]]>", "]]]]><![CDATA[>")
     soap_text = f"""<soap:Envelope xmlns:soap="{SOAP_NS}" xmlns:xsd="{SIFEN_NS}">
   <soap:Body>
     <xsd:rEnviEventoDe>
       <xsd:dId>{did}</xsd:dId>
-      <xsd:dEvReg>
+      <xsd:dEvReg><![CDATA[
 {payload}
-      </xsd:dEvReg>
+]]></xsd:dEvReg>
     </xsd:rEnviEventoDe>
   </soap:Body>
 </soap:Envelope>

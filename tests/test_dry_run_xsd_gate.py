@@ -98,6 +98,10 @@ def _signed_xml_stub(xml_bytes: bytes, _p12_path: str, _p12_password: str) -> by
 
 def _seed_invoice_70() -> None:
     con = webapp.get_db()
+    # idempotente: si ya existe, limpiar primero
+    con.execute("DELETE FROM invoices WHERE id = 70")
+    # idempotente: si ya existe, limpiar primero
+    con.execute("DELETE FROM invoices WHERE id = 70")
     customer_id = con.execute(
         "INSERT INTO customers (name, ruc, email, phone, created_at) VALUES (?,?,?,?,?)",
         ("Cliente 70", "80012345-0", "cliente70@test.local", "", webapp.now_iso()),

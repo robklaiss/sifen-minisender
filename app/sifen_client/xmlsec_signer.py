@@ -1006,7 +1006,7 @@ def sign_event_with_p12(xml_bytes: bytes, p12_path: str, p12_password: str) -> b
 
     # construir Signature manual con prefijo ds:
     try:
-        sig = etree.Element(etree.QName(DS_NS, "Signature"), nsmap={"ds": DS_NS})  # type: ignore
+        sig = etree.Element(etree.QName(DS_NS, "Signature"), nsmap={None: DS_NS})  # type: ignore
         signed_info = etree.SubElement(sig, etree.QName(DS_NS, "SignedInfo"))  # type: ignore
         canon_method = etree.SubElement(signed_info, etree.QName(DS_NS, "CanonicalizationMethod"))  # type: ignore
         canon_method.set("Algorithm", "http://www.w3.org/2001/10/xml-exc-c14n#")

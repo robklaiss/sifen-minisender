@@ -976,14 +976,13 @@ def _strip_xml_decl(xml_text: str) -> str:
 
 def _build_event_soap(did: str, signed_event_xml: str) -> bytes:
     payload = _strip_xml_decl(signed_event_xml).strip()
-    payload = payload.replace("]]>", "]]]]><![CDATA[>")
     soap_text = f"""<soap:Envelope xmlns:soap="{SOAP_NS}" xmlns:xsd="{SIFEN_NS}">
   <soap:Body>
     <xsd:rEnviEventoDe>
       <xsd:dId>{did}</xsd:dId>
-      <xsd:dEvReg><![CDATA[
+      <xsd:dEvReg>
 {payload}
-]]></xsd:dEvReg>
+      </xsd:dEvReg>
     </xsd:rEnviEventoDe>
   </soap:Body>
 </soap:Envelope>

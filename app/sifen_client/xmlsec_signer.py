@@ -1009,7 +1009,7 @@ def sign_event_with_p12(xml_bytes: bytes, p12_path: str, p12_password: str) -> b
         sig = etree.Element(etree.QName(DS_NS, "Signature"), nsmap={"ds": DS_NS})  # type: ignore
         signed_info = etree.SubElement(sig, etree.QName(DS_NS, "SignedInfo"))  # type: ignore
         canon_method = etree.SubElement(signed_info, etree.QName(DS_NS, "CanonicalizationMethod"))  # type: ignore
-        canon_method.set("Algorithm", "http://www.w3.org/TR/2001/REC-xml-c14n-20010315")
+        canon_method.set("Algorithm", "http://www.w3.org/2001/10/xml-exc-c14n#")
 
         sig_method = etree.SubElement(signed_info, etree.QName(DS_NS, "SignatureMethod"))  # type: ignore
         sig_method.set("Algorithm", "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256")

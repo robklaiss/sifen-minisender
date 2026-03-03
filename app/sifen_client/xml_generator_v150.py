@@ -6,6 +6,15 @@ Estructura correcta según XSD v150
 from typing import Optional
 from datetime import datetime
 import hashlib
+from zoneinfo import ZoneInfo
+
+SIFEN_TZ = ZoneInfo("America/Asuncion")
+
+
+def _asuncion_ts() -> str:
+    # ARAVO FIX: timestamps del DE en hora PY sin offset
+    from datetime import datetime
+    return datetime.now(tz=SIFEN_TZ).strftime("%Y-%m-%dT%H:%M:%S")
 import base64
 
 

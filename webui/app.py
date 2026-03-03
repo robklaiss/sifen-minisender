@@ -952,7 +952,7 @@ def _build_cancel_event_xml(cdc: str, motivo: str, event_id: str) -> bytes:
               xmlns:ds="{DS_NS}"
               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
               xsi:schemaLocation="{SIFEN_NS} siRecepEvento_v150.xsd">
-  <rGesEve xsi:schemaLocation="{SIFEN_NS} siRecepEvento_v150.xsd">
+  <rGesEve>
     <rEve Id="{event_id}">
       <dFecFirma>{ts}</dFecFirma>
       <dVerFor>150</dVerFor>

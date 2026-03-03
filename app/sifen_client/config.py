@@ -199,7 +199,7 @@ class SifenConfig:
         "test": {
             "recibe": "https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl",
             "recibe_lote": "https://sifen-test.set.gov.py/de/ws/async/recibe-lote.wsdl",
-            "evento": "https://sifen-test.set.gov.py/de/ws/eventos/evento",
+            "evento": "https://sifen-test.set.gov.py/de/ws/eventos/evento.wsdl",
             "consulta_lote": "https://sifen-test.set.gov.py/de/ws/consultas-lote/consulta-lote.wsdl",
             "consulta_ruc": "https://sifen-test.set.gov.py/de/ws/consultas/consulta-ruc.wsdl",
             "consulta": "https://sifen-test.set.gov.py/de/ws/consultas/consulta.wsdl",

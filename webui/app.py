@@ -16,6 +16,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
 from datetime import datetime, date, timezone
 from zoneinfo import ZoneInfo
+
+SIFEN_TZ = ZoneInfo("America/Asuncion")
 from xml.sax.saxutils import escape as xml_escape
 from flask import Flask, g, request, redirect, url_for, render_template_string, abort, send_file, jsonify, send_from_directory
 from pathlib import Path
@@ -879,8 +881,9 @@ def _next_doc_number(con: sqlite3.Connection, invoice_id: int, est: str = "", pu
     return str(invoice_id).zfill(7)
 
 def _asuncion_timestamp() -> str:
-    tz = ZoneInfo("America/Asuncion")
-    return datetime.now(tz).strftime("%Y-%m-%dT%H:%M:%S")
+    # ARAVO FIX: hora PY (America/Asuncion) SIN offset
+    from datetime import datetime
+    return datetime.now(tz=SIFEN_TZ).strftime("%Y-%m-%dT%H:%M:%S")
 
 def _make_did_15() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -1463,10 +1466,18 @@ def _build_invoice_xml_from_template(
     _update_text(root, ".//s:gTimb/s:iTiDE", doc_type, ns)
     _update_text(root, ".//s:gTimb/s:dDesTiDE", doc_type_label(doc_type), ns)
 
-    now = issue_dt or datetime.now()
-    iso = now.strftime("%Y-%m-%dT%H:%M:%S")
+    # ARAVO FIX: SIFEN espera hora PY (America/Asuncion) sin offset
+    from datetime import datetime
+    now_py_dt = datetime.now(tz=SIFEN_TZ)
+    now = now_py_dt
+    iso = now_py_dt.strftime("%Y-%m-%dT%H:%M:%S")
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)
     _update_text(root, ".//s:dFecFirma", iso, ns)
+    # ARAVO GUARDRAIL: si por algún bug quedara adelantado, abortar antes de enviar
+    iso_dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=SIFEN_TZ)
+    delta = (iso_dt - now_py_dt).total_seconds()
+    if delta > 60:
+        raise RuntimeError("ARAVO: timestamp adelantado iso={} now_py={} +{:.0f}s (bloqueado)".format(iso, now_py_dt.strftime("%Y-%m-%dT%H:%M:%S"), delta))
 
     codseg_digits = re.sub(r"\D", "", str(codseg or "").strip())
     if not re.fullmatch(r"\d{9}", codseg_digits):

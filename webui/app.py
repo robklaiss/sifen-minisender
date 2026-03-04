@@ -2315,8 +2315,13 @@ def _apply_issuer_overrides(issuer: dict) -> dict:
         issuer["email"] = email
     if city:
         issuer["ciudad"] = city
-    if logo_path:
+    # Prefer explicit env path if it exists; otherwise fallback to our built-in/logo candidates.
+    if logo_path and Path(logo_path).exists():
         issuer["logo_path"] = logo_path
+    else:
+        p, _mt = _find_issuer_logo()
+        if p:
+            issuer["logo_path"] = str(p)
     return issuer
 
 def _send_email_with_pdf(to_email: str, subject: str, body: str, pdf_path: Path) -> None:

@@ -3625,14 +3625,10 @@ def _diagnostics_consult_cdc(env: str, cdc: str) -> dict:
     finally:
         client.close()
 
-def _run_sifen_preflight() -> dict:
+def _sifen_preflight_ok() -> tuple[bool, str]:
     script_path = (BASE_DIR / "tools" / "sifen_preflight.sh").resolve()
     if not script_path.exists():
-        return {
-            "ok": False,
-            "text": "SIFEN_PREFLIGHT_MISSING",
-            "detail": f"missing {script_path}",
-        }
+        return False, f"SIFEN_PREFLIGHT_MISSING: missing {script_path}"
     try:
         result = subprocess.run(
             ["/bin/bash", str(script_path)],
@@ -3642,22 +3638,34 @@ def _run_sifen_preflight() -> dict:
             cwd=str(BASE_DIR),
         )
         stdout = (result.stdout or "").strip()
-        detail = stdout[:300]
-        if stdout:
-            text = stdout.splitlines()[0].strip()[:120]
-        else:
-            text = "SIFEN_OK" if result.returncode == 0 else "SIFEN_DOWN"
-        return {
-            "ok": result.returncode == 0,
-            "text": text,
-            "detail": detail,
-        }
+        return result.returncode == 0, stdout[:300]
     except subprocess.TimeoutExpired as exc:
         stdout = (getattr(exc, "stdout", None) or getattr(exc, "output", None) or "").strip()
         detail = stdout[:300] if stdout else "timeout after 10s"
-        return {"ok": False, "text": "SIFEN_TIMEOUT", "detail": detail}
+        return False, f"SIFEN_TIMEOUT: {detail}"
     except Exception as exc:
-        return {"ok": False, "text": "SIFEN_ERROR", "detail": str(exc)[:300]}
+        return False, f"SIFEN_ERROR: {str(exc)[:300]}"
+
+def _run_sifen_preflight() -> dict:
+    ok, detail = _sifen_preflight_ok()
+    text = "SIFEN_OK" if ok else "SIFEN_DOWN"
+    if detail:
+        if detail.startswith("SIFEN_PREFLIGHT_MISSING:"):
+            text = "SIFEN_PREFLIGHT_MISSING"
+            detail = detail.split(":", 1)[1].strip()
+        elif detail.startswith("SIFEN_TIMEOUT:"):
+            text = "SIFEN_TIMEOUT"
+            detail = detail.split(":", 1)[1].strip()
+        elif detail.startswith("SIFEN_ERROR:"):
+            text = "SIFEN_ERROR"
+            detail = detail.split(":", 1)[1].strip()
+        else:
+            text = detail.splitlines()[0].strip()[:120]
+    return {
+        "ok": ok,
+        "text": text,
+        "detail": (detail or "")[:300],
+    }
 
 @app.get("/api/sifen/status")
 def sifen_status():
@@ -5989,6 +5997,25 @@ def invoice_emit(invoice_id: int):
     confirm = (request.form.get("confirm_emit") or "").strip().upper()
     if env == "prod" and confirm != "YES":
         abort(400, "Confirmación requerida para PROD (marcá la casilla).")
+    if env == "prod":
+        ok, _detail = _sifen_preflight_ok()
+        if not ok:
+            init_db()
+            con = get_db()
+            con.execute(
+                """
+                UPDATE invoices
+                SET status=?,
+                    queued_at=?,
+                    sifen_env=?,
+                    last_sifen_msg=COALESCE(last_sifen_msg,'') || ' | SIFEN DOWN: encolado automático'
+                WHERE id=?
+                """,
+                ("QUEUED", now_iso(), env, invoice_id),
+            )
+            con.commit()
+            _enqueue_invoice(invoice_id, env)
+            return redirect(url_for("invoice_detail", invoice_id=invoice_id))
 
     return _process_invoice_emit(invoice_id, env, async_mode=False)
 

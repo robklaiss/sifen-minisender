@@ -1468,8 +1468,19 @@ def _build_invoice_xml_from_template(
     # ARAVO FIX: SIFEN espera hora PY (America/Asuncion) sin offset
     from datetime import datetime
     now_py_dt = datetime.now(tz=SIFEN_TZ)
-    now = now_py_dt
-    iso = now_py_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Si el caller pasa issue_dt (tests/override), usarlo como fecha de emisión.
+    if issue_dt is not None:
+        dt = issue_dt
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=SIFEN_TZ)
+        else:
+            dt = dt.astimezone(SIFEN_TZ)
+    else:
+        dt = now_py_dt
+
+    now = dt
+    iso = dt.strftime("%Y-%m-%dT%H:%M:%S")
     _update_text(root, ".//s:gDatGralOpe/s:dFeEmiDE", iso, ns)
     _update_text(root, ".//s:dFecFirma", iso, ns)
     # ARAVO GUARDRAIL: si por algún bug quedara adelantado, abortar antes de enviar
@@ -1493,9 +1504,13 @@ def _build_invoice_xml_from_template(
     if fe_ini:
         try:
             fe_ini_date = date.fromisoformat(fe_ini[:10])
-            if now.date() < fe_ini_date:
+
+            # comparar contra la fecha real de emisión del DE (no contra "now")
+            fe_emi = _text(".//s:gDatGralOpe/s:dFeEmiDE") or iso
+            fe_emi_date = datetime.fromisoformat(fe_emi[:19]).date()
+            if fe_emi_date < fe_ini_date:
                 raise RuntimeError(
-                    f"Fecha de emisión {now.date().isoformat()} anterior al inicio de timbrado {fe_ini_date.isoformat()}."
+                    f"Fecha de emisión {fe_emi_date.isoformat()} anterior al inicio de timbrado {fe_ini_date.isoformat()}."
                 )
         except ValueError:
             raise RuntimeError(f"dFeIniT inválida en XML: {fe_ini!r}")

@@ -268,7 +268,8 @@ CREATE TABLE IF NOT EXISTS customers (
             ruc TEXT,
             email TEXT,
             phone TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            deleted_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS products (
@@ -381,6 +382,8 @@ CREATE TABLE IF NOT EXISTS customers (
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_at TEXT")
     if not _column_exists(con, "invoices", "last_event_artifacts_dir"):
         con.execute("ALTER TABLE invoices ADD COLUMN last_event_artifacts_dir TEXT")
+    if not _column_exists(con, "customers", "deleted_at"):
+        con.execute("ALTER TABLE customers ADD COLUMN deleted_at TEXT")
     con.commit()
 
 def now_iso():
@@ -3191,11 +3194,53 @@ def resolve_source_xml_path(art_dir: str) -> Optional[str]:
 # -------------------------
 # UI helpers
 # -------------------------
+STATUS_LABELS = {
+    "DRAFT": "Borrador",
+    "READY": "Listo",
+    "PENDING": "Pendiente",
+    "QUEUED": "En cola",
+    "SENDING": "Enviando",
+    "SENT": "Enviado",
+    "CONFIRMING": "Confirmando",
+    "CONFIRMED": "Confirmado",
+    "CONFIRMED_OK": "Confirmado",
+    "APPROVED": "Aprobado",
+    "REJECTED": "Rechazado",
+    "CONFIRMED_REJECTED": "Rechazado",
+    "CANCELLED": "Anulado",
+    "CANCELLED_OK": "Anulado",
+    "CANCELLED_REJECTED": "Anulación rechazada",
+    "FAILED": "Error",
+    "ERROR": "Error",
+    "RETRYING": "Reintentando",
+    "EXPIRED": "Vencido",
+    "UNKNOWN": "Desconocido",
+    "INUTIL_OK": "Inutilizado",
+    "INUTIL_REJECTED": "Inutilización rechazada",
+    "ACTIVE": "Activo",
+    "INACTIVE": "Inactivo",
+    "BLOCKED": "Bloqueado",
+    "DELETED": "Eliminado",
+}
+
+def status_label(status: Optional[str]) -> str:
+    if status is None:
+        return STATUS_LABELS.get("UNKNOWN", "Desconocido")
+    raw = str(status).strip()
+    if not raw:
+        return STATUS_LABELS.get("UNKNOWN", "Desconocido")
+    if raw in STATUS_LABELS:
+        return STATUS_LABELS[raw]
+    upper = raw.upper()
+    return STATUS_LABELS.get(upper, raw)
+
 def badge(status: str) -> str:
     m = {
         "DRAFT": "secondary",
         "READY": "info",
+        "PENDING": "warning",
         "QUEUED": "warning",
+        "SENDING": "warning",
         "SENT": "primary",
         "CONFIRMING": "warning",
         "CONFIRMED_OK": "success",
@@ -3204,9 +3249,15 @@ def badge(status: str) -> str:
         "CANCELLED_REJECTED": "danger",
         "INUTIL_OK": "success",
         "INUTIL_REJECTED": "danger",
+        "FAILED": "danger",
+        "ERROR": "danger",
+        "RETRYING": "warning",
+        "EXPIRED": "secondary",
     }
-    cls = m.get(status, "dark")
-    return f'<span class="badge bg-{cls}">{status}</span>'
+    key = (status or "").strip().upper()
+    cls = m.get(key, "dark")
+    label = status_label(status)
+    return f'<span class="badge bg-{cls}">{label}</span>'
 
 BASE_HTML = """
 <!doctype html>
@@ -3248,19 +3299,38 @@ BASE_HTML = """
       bottom: 20px;
       background: #6c757d;
       color: #fff;
-      padding: 10px 14px;
+      padding: 8px 12px;
       border-radius: 8px;
       box-shadow: 0 6px 16px rgba(0,0,0,0.2);
       z-index: 10000;
-      max-width: 520px;
-      font-size: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
+      max-width: 260px;
+      font-size: 13px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
     }
     .status-toast.ok { background: #198754; }
     .status-toast.down { background: #dc3545; }
-    .status-toast .status-detail { font-size: 12px; opacity: 0.85; }
+    .status-toast .status-label { font-weight: 600; letter-spacing: 0.2px; }
+    .status-toast .status-icon { font-size: 14px; line-height: 1; }
+    .status-toast .status-text { font-size: 12px; opacity: 0.9; }
+    .status-toast .status-spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(255,255,255,0.5);
+      border-top-color: #fff;
+      border-radius: 50%;
+      display: none;
+      animation: sifen-spin 0.8s linear infinite;
+    }
+    .status-toast.pending .status-spinner { display: inline-block; }
+    .status-toast.pending .status-icon { display: none; }
+    .status-toast.ok .status-text { display: none; }
+    .status-toast.down .status-text { display: inline; }
+    @keyframes sifen-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
@@ -3287,9 +3357,11 @@ BASE_HTML = """
     {{ body|safe }}
 
   </div>
-  <div id="sifen-status-toast" class="status-toast pending" title="SIFEN: verificando...">
-    <div class="status-title">SIFEN: verificando...</div>
-    <div class="status-detail"></div>
+  <div id="sifen-status-toast" class="status-toast pending" title="SIFEN: verificando..." role="status" aria-live="polite">
+    <span class="status-label">SIFEN</span>
+    <span class="status-icon" aria-hidden="true"></span>
+    <span class="status-text"></span>
+    <span class="status-spinner" aria-hidden="true"></span>
   </div>
   <div id="backup-toast" class="backup-toast"></div>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -3297,37 +3369,50 @@ BASE_HTML = """
     (function () {
       const toast = document.getElementById("sifen-status-toast");
       if (!toast) return;
-      const titleEl = toast.querySelector(".status-title");
-      const detailEl = toast.querySelector(".status-detail");
+      const iconEl = toast.querySelector(".status-icon");
+      const textEl = toast.querySelector(".status-text");
 
-      function setStatus(ok, detail) {
+      function setStatus(state) {
+        const ok = state && Object.prototype.hasOwnProperty.call(state, "ok") ? state.ok : null;
+        const checking = Boolean(state && state.checking);
         toast.classList.remove("ok", "down", "pending");
+        if (checking || ok === null) {
+          toast.classList.add("pending");
+          iconEl.textContent = "";
+          textEl.textContent = "";
+          toast.title = "SIFEN: verificando";
+          return;
+        }
         if (ok === true) {
           toast.classList.add("ok");
-          titleEl.textContent = "SIFEN: DISPONIBLE";
-        } else if (ok === false) {
-          toast.classList.add("down");
-          titleEl.textContent = "SIFEN: NO DISPONIBLE";
+          iconEl.textContent = "✅";
+          textEl.textContent = "";
+          toast.title = "SIFEN disponible";
         } else {
-          toast.classList.add("pending");
-          titleEl.textContent = "SIFEN: verificando...";
+          toast.classList.add("down");
+          iconEl.textContent = "❌";
+          textEl.textContent = "No disponible";
+          toast.title = "SIFEN no disponible";
         }
-        const detailText = (detail || "").toString().trim();
-        detailEl.textContent = detailText;
-        detailEl.style.display = detailText ? "block" : "none";
-        toast.title = detailText || titleEl.textContent;
       }
 
+      let inFlight = false;
       async function check() {
+        if (inFlight) return;
+        inFlight = true;
+        setStatus({ ok: null, checking: true });
         try {
           const res = await fetch("/api/sifen/status", { cache: "no-store" });
           if (!res.ok) return;
           const data = await res.json();
-          setStatus(Boolean(data.ok), data.detail || data.text || "");
-        } catch (e) {}
+          setStatus({ ok: data.ok, checking: Boolean(data.checking) });
+        } catch (e) {
+        } finally {
+          inFlight = false;
+        }
       }
 
-      setStatus(null, "");
+      setStatus({ ok: null, checking: true });
       check();
       setInterval(check, 30000);
     })();
@@ -3626,6 +3711,73 @@ def _diagnostics_consult_cdc(env: str, cdc: str) -> dict:
     finally:
         client.close()
 
+_SIFEN_STATUS_LOCK = threading.Lock()
+_SIFEN_STATUS_STATE = {
+    "last_checked_at": 0.0,
+    "last_ok": None,
+    "last_text": "",
+    "last_detail": "",
+    "next_allowed_at": 0.0,
+    "backoff_step": -1,
+    "inflight": False,
+}
+_SIFEN_STATUS_BACKOFF = (60, 120, 300, 600, 900)
+
+
+def _reset_sifen_status_cache() -> None:
+    with _SIFEN_STATUS_LOCK:
+        _SIFEN_STATUS_STATE.update(
+            {
+                "last_checked_at": 0.0,
+                "last_ok": None,
+                "last_text": "",
+                "last_detail": "",
+                "next_allowed_at": 0.0,
+                "backoff_step": -1,
+                "inflight": False,
+            }
+        )
+
+
+def _sifen_status_is_dev() -> bool:
+    env = (os.getenv("SIFEN_ENV") or "").strip().lower()
+    if env and env != "prod":
+        return True
+    flask_env = (os.getenv("FLASK_ENV") or "").strip().lower()
+    if flask_env and flask_env != "production":
+        return True
+    debug_flag = (os.getenv("FLASK_DEBUG") or "").strip().lower()
+    return debug_flag in ("1", "true", "yes")
+
+
+def _sifen_status_ttl_sec() -> int:
+    raw = (os.getenv("SIFEN_STATUS_TTL_SEC") or "").strip()
+    try:
+        ttl = int(raw) if raw else 300
+    except ValueError:
+        ttl = 300
+    if ttl <= 0:
+        ttl = 300
+    if _sifen_status_is_dev():
+        return min(ttl, 60)
+    return ttl
+
+
+def _sifen_status_payload(*, checking: bool, cached: bool) -> dict:
+    debug_flag = (os.getenv("SIFEN_STATUS_DEBUG") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    return {
+        "ok": _SIFEN_STATUS_STATE["last_ok"],
+        "text": _SIFEN_STATUS_STATE["last_text"],
+        "detail": _SIFEN_STATUS_STATE["last_detail"] if debug_flag else "",
+        "checked_at": _SIFEN_STATUS_STATE["last_checked_at"],
+        "cached": cached,
+        "checking": checking,
+    }
+
 def _sifen_preflight_ok() -> tuple[bool, str]:
     script_path = (BASE_DIR / "tools" / "sifen_preflight.sh").resolve()
     if not script_path.exists():
@@ -3673,9 +3825,54 @@ def _run_sifen_preflight() -> dict:
         "detail": (detail or "")[:300],
     }
 
+
+def _get_sifen_status_cached() -> dict:
+    now = time.time()
+    ttl = _sifen_status_ttl_sec()
+    with _SIFEN_STATUS_LOCK:
+        if _SIFEN_STATUS_STATE["inflight"]:
+            return _sifen_status_payload(checking=True, cached=True)
+        last_checked = _SIFEN_STATUS_STATE["last_checked_at"]
+        if last_checked and (now - last_checked) < ttl:
+            return _sifen_status_payload(checking=False, cached=True)
+        next_allowed = _SIFEN_STATUS_STATE["next_allowed_at"]
+        if next_allowed and now < next_allowed:
+            return _sifen_status_payload(checking=False, cached=True)
+        _SIFEN_STATUS_STATE["inflight"] = True
+
+    try:
+        result = _run_sifen_preflight()
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "text": "SIFEN_ERROR",
+            "detail": f"{exc}"[:300],
+        }
+
+    checked_at = time.time()
+    ok = bool(result.get("ok"))
+    with _SIFEN_STATUS_LOCK:
+        _SIFEN_STATUS_STATE["inflight"] = False
+        _SIFEN_STATUS_STATE["last_checked_at"] = checked_at
+        _SIFEN_STATUS_STATE["last_ok"] = result.get("ok")
+        _SIFEN_STATUS_STATE["last_text"] = (result.get("text") or "")
+        _SIFEN_STATUS_STATE["last_detail"] = (result.get("detail") or "")
+        if ok:
+            _SIFEN_STATUS_STATE["backoff_step"] = -1
+            _SIFEN_STATUS_STATE["next_allowed_at"] = 0.0
+        else:
+            step = min(
+                _SIFEN_STATUS_STATE["backoff_step"] + 1,
+                len(_SIFEN_STATUS_BACKOFF) - 1,
+            )
+            _SIFEN_STATUS_STATE["backoff_step"] = step
+            _SIFEN_STATUS_STATE["next_allowed_at"] = checked_at + _SIFEN_STATUS_BACKOFF[step]
+
+    return _sifen_status_payload(checking=False, cached=False)
+
 @app.get("/api/sifen/status")
 def sifen_status():
-    return jsonify(_run_sifen_preflight())
+    return jsonify(_get_sifen_status_cached())
 
 @app.route("/backup/status")
 def backup_status():
@@ -4001,7 +4198,7 @@ def invoices():
 
     con = get_db()
 
-    customers = con.execute("SELECT id, name FROM customers ORDER BY name ASC").fetchall()
+    customers = con.execute("SELECT id, name FROM customers WHERE deleted_at IS NULL ORDER BY name ASC").fetchall()
 
     where = []
     params = []
@@ -4304,6 +4501,7 @@ def api_customers():
             f"""
             SELECT {", ".join(select_cols)}
             FROM customers c
+            WHERE c.deleted_at IS NULL
             ORDER BY c.id DESC
             LIMIT ? OFFSET ?
             """,
@@ -4822,11 +5020,11 @@ def invoice_new():
     con = get_db()
 
     # Seed mínimo si DB está vacía (para que puedas ver algo ya)
-    if con.execute("SELECT COUNT(*) n FROM customers").fetchone()["n"] == 0:
+    if con.execute("SELECT COUNT(*) n FROM customers WHERE deleted_at IS NULL").fetchone()["n"] == 0:
         con.execute("INSERT INTO customers (name, ruc, created_at) VALUES (?,?,?)", ("Cliente Demo S.A.", "80012345-6", now_iso()))
         con.commit()
 
-    customers = con.execute("SELECT id, name, ruc FROM customers ORDER BY name ASC").fetchall()
+    customers = con.execute("SELECT id, name, ruc FROM customers WHERE deleted_at IS NULL ORDER BY name ASC").fetchall()
     products = con.execute("SELECT id, sku, name, unit, price_unit FROM products ORDER BY name ASC").fetchall()
     default_est = get_setting("default_establishment", "001")
     default_pun = get_setting("default_point_exp", "001")
@@ -4838,6 +5036,12 @@ def invoice_new():
         customer_id = int(request.form.get("customer_id") or "0")
         if not customer_id:
             abort(400, "customer_id requerido")
+        exists = con.execute(
+            "SELECT 1 FROM customers WHERE id=? AND deleted_at IS NULL",
+            (customer_id,),
+        ).fetchone()
+        if not exists:
+            abort(400, "Cliente inválido o eliminado.")
         doc_type = normalize_doc_type(request.form.get("doc_type"))
 
         issued_at = now_iso()
@@ -7227,7 +7431,7 @@ def customer_quick_add():
 def customer_edit(customer_id: int):
     init_db()
     con = get_db()
-    row = con.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone()
+    row = con.execute("SELECT * FROM customers WHERE id=? AND deleted_at IS NULL", (customer_id,)).fetchone()
     if not row:
         abort(404)
 
@@ -7273,14 +7477,65 @@ def customer_edit(customer_id: int):
               <div class="col-12 d-flex gap-2 mt-2">
                 <button class="btn btn-primary" type="submit">Guardar</button>
                 <a class="btn btn-outline-secondary" href="{{ url_for('customers') }}">Cancelar</a>
+                <button class="btn btn-outline-danger ms-auto" type="button" data-bs-toggle="modal" data-bs-target="#deleteCustomerModal">Eliminar cliente</button>
               </div>
             </form>
+            <div class="modal fade" id="deleteCustomerModal" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                  <div class="modal-header">
+                    <h5 class="modal-title">Eliminar cliente</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                  </div>
+                  <div class="modal-body">
+                    ¿Seguro que deseas eliminar este cliente? Esta acción no se puede deshacer.
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <form method="post" action="{{ url_for('customer_delete', customer_id=row.id) }}">
+                      <input type="hidden" name="confirm_delete" value="YES">
+                      <button class="btn btn-danger" type="submit">Sí, eliminar</button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         """,
         row=row,
     )
     return render_template_string(BASE_HTML, title="Editar cliente", db_path=DB_PATH, body=body)
+
+
+@app.route("/customer/<int:customer_id>/delete", methods=["POST"])
+def customer_delete(customer_id: int):
+    init_db()
+    con = get_db()
+    confirm = (request.form.get("confirm_delete") or "").strip().upper()
+    if confirm != "YES":
+        abort(400, "Confirmación requerida")
+
+    row = con.execute("SELECT id, deleted_at FROM customers WHERE id=?", (customer_id,)).fetchone()
+    if not row:
+        abort(404)
+    if row["deleted_at"]:
+        return redirect(url_for("customers", msg="deleted"))
+
+    inv_count = con.execute(
+        "SELECT COUNT(*) n FROM invoices WHERE customer_id=?",
+        (customer_id,),
+    ).fetchone()["n"]
+    if inv_count:
+        return redirect(url_for("customers", err="has_invoices"))
+
+    try:
+        con.execute("UPDATE customers SET deleted_at=? WHERE id=?", (now_iso(), customer_id))
+        con.commit()
+    except Exception:
+        return redirect(url_for("customers", err="delete_failed"))
+
+    return redirect(url_for("customers", msg="deleted"))
 
 
 @app.route("/product/new", methods=["GET", "POST"])
@@ -7446,12 +7701,27 @@ def product_edit(product_id: int):
 def customers():
     init_db()
     con = get_db()
-    rows = con.execute("SELECT * FROM customers ORDER BY id DESC").fetchall()
+    rows = con.execute("SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY id DESC").fetchall()
+    msg = (request.args.get("msg") or "").strip()
+    err = (request.args.get("err") or "").strip()
+    alert = None
+    alert_cls = "success"
+    if msg == "deleted":
+        alert = "Cliente eliminado correctamente."
+    elif err == "delete_failed":
+        alert = "No se pudo eliminar el cliente. Intenta de nuevo."
+        alert_cls = "danger"
+    elif err == "has_invoices":
+        alert = "No se puede eliminar: el cliente tiene facturas asociadas."
+        alert_cls = "warning"
     body = render_template_string(
         """
         <div class="card">
           <div class="card-body">
             <h5>Clientes</h5>
+            {% if alert %}
+              <div class="alert alert-{{alert_cls}} py-2">{{ alert }}</div>
+            {% endif %}
             <div class=\"d-flex justify-content-between align-items-center mb-2\"><div class=\"text-muted small\">Listado</div><a class=\"btn btn-sm btn-primary\" href=\"{{ url_for('customer_new') }}\">+ Agregar</a></div><div class="table-responsive">
               <table class="table table-sm align-middle">
                 <thead><tr><th>ID</th><th>Nombre</th><th>RUC</th><th>Creado</th><th>Acciones</th></tr></thead>
@@ -7478,6 +7748,8 @@ def customers():
         </div>
         """,
         rows=rows,
+        alert=alert,
+        alert_cls=alert_cls,
     )
     return render_template_string(BASE_HTML, title="Clientes", db_path=DB_PATH, body=body)
 

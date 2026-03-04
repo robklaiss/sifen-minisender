@@ -614,6 +614,13 @@ def _default_extra_json_for(doc_type: str) -> Optional[dict]:
         data["documentoAsociado"] = {
             "tipoDocumentoAsoc": "3",
         }
+        data.setdefault("autofactura", {})
+        if "iNatVen" not in data["autofactura"]:
+            data["autofactura"]["iNatVen"] = "1"
+        if "iTipIDVen" not in data["autofactura"]:
+            data["autofactura"]["iTipIDVen"] = str(
+                data["autofactura"].get("tipoDocumento") or "1"
+            )
         return data
     if doc_type in ("5", "6"):
         # usar nota de crédito como base para NC/ND
@@ -630,6 +637,74 @@ def _parse_extra_json(text: Optional[str], doc_type: str) -> dict:
             raise RuntimeError(f"JSON extra inválido: {e}")
     fallback = _default_extra_json_for(doc_type)
     return fallback or {}
+
+def _afe_vendor_from_extra(extra_json: dict) -> dict:
+    extra_json = extra_json or {}
+    vendor = {}
+    afe_root = extra_json.get("afe")
+    if isinstance(afe_root, dict):
+        vend = afe_root.get("vendedor")
+        if isinstance(vend, dict):
+            vendor.update(vend)
+    afe = extra_json.get("autofactura")
+    if isinstance(afe, dict):
+        vendor.update(afe)
+    return vendor
+
+def _afe_pick(afe: dict, *keys: str) -> str:
+    for key in keys:
+        val = afe.get(key)
+        if val is None:
+            continue
+        raw = str(val).strip()
+        if raw != "":
+            return raw
+    return ""
+
+def _afe_vendor_form_values(afe_vendor: dict) -> dict:
+    return {
+        "tipo_vendedor": _afe_pick(afe_vendor, "iNatVen", "naturaleza", "tipo_vendedor"),
+        "tipo_doc": _afe_pick(afe_vendor, "iTipIDVen", "tipoDocumento", "tipo_doc"),
+        "nro_doc": _afe_pick(afe_vendor, "dNumIDVen", "documento", "nro_doc", "nro_doc_identidad"),
+        "nombre": _afe_pick(afe_vendor, "dNomVen", "nombre", "nombre_apellido_o_razon"),
+        "direccion": _afe_pick(afe_vendor, "dDirVen", "direccion", "direccionVendedor"),
+        "num_casa": _afe_pick(afe_vendor, "dNumCasVen", "numCasa"),
+        "departamento": _afe_pick(afe_vendor, "cDepVen", "departamentoVendedor", "departamento"),
+        "distrito": _afe_pick(afe_vendor, "cDisVen", "distritoVendedor", "distrito"),
+        "ciudad": _afe_pick(afe_vendor, "cCiuVen", "ciudadVendedor", "ciudad"),
+    }
+
+def _set_afe_vendor_extra(extra_json: dict, vendor: dict) -> dict:
+    extra_json = extra_json or {}
+    extra_json.setdefault("autofactura", {}).update(vendor)
+    extra_json.setdefault("afe", {}).setdefault("vendedor", {}).update(vendor)
+    return extra_json
+
+def _sync_afe_receiver_with_emitter(root: ET.Element, ns: dict, ns_uri: str) -> None:
+    g_emis = root.find(".//s:gEmis", ns)
+    g_rec = root.find(".//s:gDatRec", ns)
+    if g_emis is None or g_rec is None:
+        return
+
+    def _copy(tag_em: str, tag_rec: str) -> None:
+        src = g_emis.find(f"{{{ns_uri}}}{tag_em}")
+        if src is None or not (src.text or "").strip():
+            return
+        _ensure_child_ns(g_rec, tag_rec, ns_uri).text = (src.text or "").strip()
+
+    _copy("dRucEm", "dRucRec")
+    _copy("dDVEmi", "dDVRec")
+    _copy("dNomEmi", "dNomRec")
+    _copy("dDirEmi", "dDirRec")
+    _copy("dNumCas", "dNumCasRec")
+    _copy("cDepEmi", "cDepRec")
+    _copy("dDesDepEmi", "dDesDepRec")
+    _copy("cDisEmi", "cDisRec")
+    _copy("dDesDisEmi", "dDesDisRec")
+    _copy("cCiuEmi", "cCiuRec")
+    _copy("dDesCiuEmi", "dDesCiuRec")
+    _copy("dTelEmi", "dTelRec")
+    _copy("dEmailE", "dEmailRec")
 
 def _get_transport_from_extra(extra_json: dict) -> dict:
     extra_json = extra_json or {}
@@ -733,11 +808,38 @@ def _validate_doc_extra(doc_type: str, extra_json: dict) -> list:
             errors.append("Falta iMotEmi en doc_extra_json (1-8) para Nota de crédito/débito.")
 
     if doc_type == "4":
-        afe = extra_json.get("autofactura") or {}
-        if not str(afe.get("documento") or "").strip():
-            errors.append("Autofactura: falta autofactura.documento (dNumIDVen).")
-        if not str(afe.get("nombre") or "").strip():
-            errors.append("Autofactura: falta autofactura.nombre (dNomVen).")
+        afe = _afe_vendor_from_extra(extra_json)
+        i_nat = _afe_pick(afe, "iNatVen", "naturaleza", "tipo_vendedor")
+        if i_nat not in AFE_NAT_MAP:
+            errors.append("Autofactura: falta tipo_vendedor (iNatVen 1/2).")
+        i_tip = _afe_pick(afe, "iTipIDVen", "tipoDocumento", "tipo_doc")
+        if i_tip not in AFE_ID_MAP:
+            errors.append("Autofactura: falta tipo_doc_identidad (iTipIDVen).")
+        if not _afe_pick(afe, "dNumIDVen", "documento", "nro_doc", "nro_doc_identidad"):
+            errors.append("Autofactura: falta nro_doc_identidad (dNumIDVen).")
+        if not _afe_pick(afe, "dNomVen", "nombre", "nombre_apellido_o_razon"):
+            errors.append("Autofactura: falta nombre del vendedor (dNomVen).")
+
+        # Dirección mínima requerida por XSD en gCamAE
+        if not _afe_pick(afe, "dDirVen", "direccion", "direccionVendedor"):
+            errors.append("Autofactura: falta dirección del vendedor (dDirVen).")
+        num_casa = _afe_pick(afe, "dNumCasVen", "numCasa")
+        if not num_casa:
+            errors.append("Autofactura: falta número de casa (dNumCasVen).")
+        elif not num_casa.isdigit():
+            errors.append("Autofactura: número de casa inválido (solo dígitos).")
+
+        dep = _afe_pick(afe, "cDepVen", "departamentoVendedor", "departamento")
+        if not dep:
+            errors.append("Autofactura: falta departamento del vendedor (cDepVen).")
+        elif not dep.isdigit():
+            errors.append("Autofactura: departamento inválido (solo dígitos).")
+
+        ciu = _afe_pick(afe, "cCiuVen", "ciudadVendedor", "ciudad")
+        if not ciu:
+            errors.append("Autofactura: falta ciudad del vendedor (cCiuVen).")
+        elif not ciu.isdigit():
+            errors.append("Autofactura: ciudad inválida (solo dígitos).")
         # En AFE el documento asociado debe ser Constancia Electrónica (H002=3)
         assoc = extra_json.get("documentoAsociado") or {}
         tip = str(assoc.get("tipoDocumentoAsoc") or assoc.get("iTipDocAso") or "").strip()
@@ -1530,6 +1632,9 @@ def _build_invoice_xml_from_template(
     if cust_dv:
         _update_text(root, ".//s:gDatRec/s:dDVRec", cust_dv, ns)
 
+    if doc_type == "4":
+        _sync_afe_receiver_with_emitter(root, ns, ns_uri)
+
     extra_json = extra_json or {}
 
     # Ajustes por tipo de documento
@@ -1550,67 +1655,86 @@ def _build_invoice_xml_from_template(
 
     # gCamAE (Autofactura)
     if doc_type == "4":
-        afe = extra_json.get("autofactura") or {}
+        afe = _afe_vendor_from_extra(extra_json)
         gcam = _ensure_child_ns(gdtip, "gCamAE", ns_uri)
-        i_nat = str(afe.get("iNatVen") or afe.get("naturaleza") or "1").strip()
-        if i_nat not in ("1", "2"):
-            i_nat = "1"
+        i_nat = _afe_pick(afe, "iNatVen", "naturaleza", "tipo_vendedor")
+        if i_nat not in AFE_NAT_MAP:
+            raise RuntimeError("Autofactura: falta tipo_vendedor (iNatVen 1/2).")
         _ensure_child_ns(gcam, "iNatVen", ns_uri).text = i_nat
         _ensure_child_ns(gcam, "dDesNatVen", ns_uri).text = AFE_NAT_MAP.get(i_nat, "No contribuyente")
 
-        i_tip_id = str(afe.get("iTipIDVen") or afe.get("tipoDocumento") or "1").strip()
+        i_tip_id = _afe_pick(afe, "iTipIDVen", "tipoDocumento", "tipo_doc")
         if i_tip_id not in AFE_ID_MAP:
-            i_tip_id = "1"
+            raise RuntimeError("Autofactura: falta tipo_doc_identidad (iTipIDVen).")
         _ensure_child_ns(gcam, "iTipIDVen", ns_uri).text = i_tip_id
         _ensure_child_ns(gcam, "dDTipIDVen", ns_uri).text = AFE_ID_MAP.get(i_tip_id, "Cédula paraguaya")
 
-        _ensure_child_ns(gcam, "dNumIDVen", ns_uri).text = str(afe.get("documento") or "1")
-        _ensure_child_ns(gcam, "dNomVen", ns_uri).text = str(afe.get("nombre") or "Vendedor")
+        num_id = _afe_pick(afe, "dNumIDVen", "documento", "nro_doc", "nro_doc_identidad")
+        if not num_id:
+            raise RuntimeError("Autofactura: falta nro_doc_identidad (dNumIDVen).")
+        _ensure_child_ns(gcam, "dNumIDVen", ns_uri).text = num_id
+
+        nombre = _afe_pick(afe, "dNomVen", "nombre", "nombre_apellido_o_razon")
+        if not nombre:
+            raise RuntimeError("Autofactura: falta nombre del vendedor (dNomVen).")
+        _ensure_child_ns(gcam, "dNomVen", ns_uri).text = nombre
 
         def _emval(path: str) -> str:
             el = root.find(path, ns)
             return (el.text or "").strip() if el is not None and el.text else ""
 
-        dir_ven = str(afe.get("direccion") or afe.get("direccionVendedor") or _emval(".//s:gEmis/s:dDirEmi") or "Dirección").strip()
-        num_cas_ven = str(afe.get("numCasa") or _emval(".//s:gEmis/s:dNumCas") or "0").strip()
+        dir_ven = _afe_pick(afe, "dDirVen", "direccion", "direccionVendedor")
+        if not dir_ven:
+            raise RuntimeError("Autofactura: falta dirección del vendedor (dDirVen).")
+        num_cas_ven = _afe_pick(afe, "dNumCasVen", "numCasa")
+        if not num_cas_ven:
+            raise RuntimeError("Autofactura: falta número de casa (dNumCasVen).")
         _ensure_child_ns(gcam, "dDirVen", ns_uri).text = dir_ven
         _ensure_child_ns(gcam, "dNumCasVen", ns_uri).text = num_cas_ven
 
-        dep_ven = str(afe.get("departamentoVendedor") or _emval(".//s:gEmis/s:cDepEmi") or "1").strip()
-        des_dep_ven = str(afe.get("dDesDepVen") or _emval(".//s:gEmis/s:dDesDepEmi") or "CAPITAL").strip()
+        dep_ven = _afe_pick(afe, "cDepVen", "departamentoVendedor", "departamento")
+        if not dep_ven:
+            raise RuntimeError("Autofactura: falta departamento del vendedor (cDepVen).")
+        des_dep_ven = _afe_pick(afe, "dDesDepVen") or _emval(".//s:gEmis/s:dDesDepEmi")
         _ensure_child_ns(gcam, "cDepVen", ns_uri).text = dep_ven
-        _ensure_child_ns(gcam, "dDesDepVen", ns_uri).text = des_dep_ven
+        if des_dep_ven:
+            _ensure_child_ns(gcam, "dDesDepVen", ns_uri).text = des_dep_ven
 
-        dis_ven = str(afe.get("distritoVendedor") or "").strip()
+        dis_ven = _afe_pick(afe, "cDisVen", "distritoVendedor", "distrito")
         if dis_ven:
             _ensure_child_ns(gcam, "cDisVen", ns_uri).text = dis_ven
-            des_dis = str(afe.get("dDesDisVen") or "").strip()
+            des_dis = _afe_pick(afe, "dDesDisVen")
             if des_dis:
                 _ensure_child_ns(gcam, "dDesDisVen", ns_uri).text = des_dis
 
-        ciu_ven = str(afe.get("ciudadVendedor") or _emval(".//s:gEmis/s:cCiuEmi") or "1").strip()
-        des_ciu_ven = str(afe.get("dDesCiuVen") or _emval(".//s:gEmis/s:dDesCiuEmi") or "ASUNCION (DISTRITO)").strip()
+        ciu_ven = _afe_pick(afe, "cCiuVen", "ciudadVendedor", "ciudad")
+        if not ciu_ven:
+            raise RuntimeError("Autofactura: falta ciudad del vendedor (cCiuVen).")
+        des_ciu_ven = _afe_pick(afe, "dDesCiuVen") or _emval(".//s:gEmis/s:dDesCiuEmi")
         _ensure_child_ns(gcam, "cCiuVen", ns_uri).text = ciu_ven
-        _ensure_child_ns(gcam, "dDesCiuVen", ns_uri).text = des_ciu_ven
+        if des_ciu_ven:
+            _ensure_child_ns(gcam, "dDesCiuVen", ns_uri).text = des_ciu_ven
 
-        dir_prov = str(afe.get("direccionProv") or afe.get("direccionVendedor") or dir_ven).strip()
-        dep_prov = str(afe.get("departamentoProv") or dep_ven).strip()
-        des_dep_prov = str(afe.get("dDesDepProv") or des_dep_ven).strip()
-        ciu_prov = str(afe.get("ciudadProv") or ciu_ven).strip()
-        des_ciu_prov = str(afe.get("dDesCiuProv") or des_ciu_ven).strip()
+        dir_prov = _afe_pick(afe, "dDirProv", "direccionProv") or dir_ven
+        dep_prov = _afe_pick(afe, "cDepProv", "departamentoProv") or dep_ven
+        des_dep_prov = _afe_pick(afe, "dDesDepProv") or des_dep_ven
+        ciu_prov = _afe_pick(afe, "cCiuProv", "ciudadProv") or ciu_ven
+        des_ciu_prov = _afe_pick(afe, "dDesCiuProv") or des_ciu_ven
         _ensure_child_ns(gcam, "dDirProv", ns_uri).text = dir_prov
         _ensure_child_ns(gcam, "cDepProv", ns_uri).text = dep_prov
-        _ensure_child_ns(gcam, "dDesDepProv", ns_uri).text = des_dep_prov
+        if des_dep_prov:
+            _ensure_child_ns(gcam, "dDesDepProv", ns_uri).text = des_dep_prov
 
-        dis_prov = str(afe.get("distritoProv") or "").strip()
+        dis_prov = _afe_pick(afe, "cDisProv", "distritoProv")
         if dis_prov:
             _ensure_child_ns(gcam, "cDisProv", ns_uri).text = dis_prov
-            des_dis_p = str(afe.get("dDesDisProv") or "").strip()
+            des_dis_p = _afe_pick(afe, "dDesDisProv")
             if des_dis_p:
                 _ensure_child_ns(gcam, "dDesDisProv", ns_uri).text = des_dis_p
 
         _ensure_child_ns(gcam, "cCiuProv", ns_uri).text = ciu_prov
-        _ensure_child_ns(gcam, "dDesCiuProv", ns_uri).text = des_ciu_prov
+        if des_ciu_prov:
+            _ensure_child_ns(gcam, "dDesCiuProv", ns_uri).text = des_ciu_prov
 
     # gCamNCDE (Nota de crédito/débito)
     if doc_type in ("5", "6"):
@@ -2184,7 +2308,6 @@ def _build_pdf_payload(
     source_xml_text: Optional[str] = None,
 ) -> dict:
     cust_ruc = (invoice["customer_ruc"] if "customer_ruc" in invoice.keys() else "") or ""
-    ruc_main, ruc_dv = _split_ruc_dv(cust_ruc)
     est = (invoice["establishment"] if "establishment" in invoice.keys() else "") or ""
     pun = (invoice["point_exp"] if "point_exp" in invoice.keys() else "") or ""
     qr_url = ""
@@ -2203,6 +2326,14 @@ def _build_pdf_payload(
         if not m:
             return ""
         return (m.group(1) or "").strip()
+
+    rec_name = find_tag("dNomRec") or ((invoice["customer_name"] if "customer_name" in invoice.keys() else "") or "")
+    rec_ruc_raw = find_tag("dRucRec") or cust_ruc
+    rec_dv_raw = find_tag("dDVRec")
+    ruc_main, ruc_dv = _split_ruc_dv(rec_ruc_raw)
+    if rec_dv_raw:
+        ruc_dv = rec_dv_raw
+    rec_email = find_tag("dEmailRec") or ((invoice["customer_email"] if "customer_email" in invoice.keys() else "") or "")
 
     dir_rec = find_tag("dDirRec")
     num_cas_rec = find_tag("dNumCasRec")
@@ -2224,10 +2355,10 @@ def _build_pdf_payload(
         "dIVA10": iva_total_str,
         "dIVA5": "0",
         "dTotIVA": iva_total_str,
-        "dNomRec": (invoice["customer_name"] if "customer_name" in invoice.keys() else "") or "",
+        "dNomRec": rec_name,
         "dRucRec": ruc_main,
         "dDVRec": ruc_dv,
-        "dEmailRec": (invoice["customer_email"] if "customer_email" in invoice.keys() else "") or "",
+        "dEmailRec": rec_email,
         "dDirRec": dir_rec,
         "dTelRec": tel_rec,
         "dDCondOpe": cond_venta,
@@ -3579,8 +3710,14 @@ def _diagnostics_dry_run() -> dict:
             if doc_type == "4":
                 extra["documentoAsociado"] = {"tipoDocumentoAsoc": "3"}
                 extra.setdefault("autofactura", {})
+                extra["autofactura"].setdefault("iNatVen", "1")
+                extra["autofactura"].setdefault("iTipIDVen", "1")
                 extra["autofactura"].setdefault("documento", "123456")
                 extra["autofactura"].setdefault("nombre", "Vendedor")
+                extra["autofactura"].setdefault("direccion", "Direccion")
+                extra["autofactura"].setdefault("numCasa", "0")
+                extra["autofactura"].setdefault("departamentoVendedor", "12")
+                extra["autofactura"].setdefault("ciudadVendedor", "6106")
             if doc_type in ("5", "6"):
                 extra["documentoAsociado"] = {
                     "tipoDocumentoAsoc": "1",
@@ -4309,7 +4446,7 @@ def invoices():
                   {% for r in rows %}
                     <tr>
                       <td class="mono">{{r.id}}</td>
-                      <td>{{r.customer_name}}</td>
+                      <td>{% if r.doc_type == "4" %}Autofactura (Emisor){% else %}{{r.customer_name}}{% endif %}</td>
                       <td class="mono">{{r.customer_ruc or "—"}}</td>
                       <td>{{ doc_type_label(r.doc_type) }}</td>
                       <td class="mono">{{"{:,}".format(r.total).replace(",", ".")}} {{r.currency}}</td>
@@ -5038,23 +5175,63 @@ def invoice_new():
         available_pun = [default_pun or "001"]
 
     if request.method == "POST":
-        customer_id = int(request.form.get("customer_id") or "0")
-        if not customer_id:
-            abort(400, "customer_id requerido")
-        exists = con.execute(
-            "SELECT 1 FROM customers WHERE id=? AND deleted_at IS NULL",
-            (customer_id,),
-        ).fetchone()
-        if not exists:
-            abort(400, "Cliente inválido o eliminado.")
         doc_type = normalize_doc_type(request.form.get("doc_type"))
+        doc_extra_json = None
+        customer_id = int(request.form.get("customer_id") or "0")
+        if doc_type == "4":
+            # customer_id se usa solo por restricción del modelo actual;
+            # en AFE el receptor real se fuerza a emisor en XML.
+            row = con.execute(
+                "SELECT id FROM customers WHERE deleted_at IS NULL ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+            if row:
+                customer_id = int(row["id"])
+            else:
+                con.execute(
+                    "INSERT INTO customers (name, ruc, created_at) VALUES (?,?,?)",
+                    ("Cliente Demo S.A.", "80012345-6", now_iso()),
+                )
+                customer_id = int(con.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+            def _clean_digits(value: Optional[str]) -> str:
+                return re.sub(r"\D", "", (value or "").strip())
+
+            def _clean_text(value: Optional[str]) -> str:
+                return re.sub(r"\s+", " ", (value or "").strip())
+
+            vendor = {
+                "iNatVen": (request.form.get("afe_tipo_vendedor") or "").strip(),
+                "iTipIDVen": (request.form.get("afe_tipo_doc") or "").strip(),
+                "documento": _clean_text(request.form.get("afe_nro_doc")),
+                "nombre": _clean_text(request.form.get("afe_nombre")),
+                "direccion": _clean_text(request.form.get("afe_direccion")),
+                "numCasa": _clean_digits(request.form.get("afe_num_casa")),
+                "departamentoVendedor": _clean_digits(request.form.get("afe_departamento")),
+                "distritoVendedor": _clean_digits(request.form.get("afe_distrito")),
+                "ciudadVendedor": _clean_digits(request.form.get("afe_ciudad")),
+            }
+            extra_json = {"documentoAsociado": {"tipoDocumentoAsoc": "3"}}
+            _set_afe_vendor_extra(extra_json, vendor)
+            errors = _validate_doc_extra(doc_type, extra_json)
+            if errors:
+                abort(400, "En Autofactura debes completar los datos del vendedor.\n- " + "\n- ".join(errors))
+            doc_extra_json = json.dumps(extra_json, ensure_ascii=False)
+        else:
+            if not customer_id:
+                abort(400, "customer_id requerido")
+            exists = con.execute(
+                "SELECT 1 FROM customers WHERE id=? AND deleted_at IS NULL",
+                (customer_id,),
+            ).fetchone()
+            if not exists:
+                abort(400, "Cliente inválido o eliminado.")
 
         issued_at = now_iso()
         est = _zfill_digits(request.form.get("establishment") or default_est, 3)
         pun = _zfill_digits(request.form.get("point_exp") or default_pun, 3)
         cur = con.execute(
-            "INSERT INTO invoices (created_at, issued_at, customer_id, status, doc_type, establishment, point_exp) VALUES (?,?,?,?,?,?,?)",
-            (now_iso(), issued_at, customer_id, "DRAFT", doc_type, est, pun),
+            "INSERT INTO invoices (created_at, issued_at, customer_id, status, doc_type, establishment, point_exp, doc_extra_json) VALUES (?,?,?,?,?,?,?,?)",
+            (now_iso(), issued_at, customer_id, "DRAFT", doc_type, est, pun, doc_extra_json),
         )
         invoice_id = cur.lastrowid
 
@@ -5107,7 +5284,7 @@ def invoice_new():
           <div class="card-body">
             <h5>Nuevo documento (mínimo viable)</h5>
             <form method="post" class="row g-3">
-              <div class="col-md-6">
+              <div class="col-md-6" id="customer-block">
                 <label class="form-label">Cliente</label>
                 <select class="form-select" name="customer_id" id="customer-select" required>
                   {% for c in customers %}
@@ -5115,6 +5292,11 @@ def invoice_new():
                   {% endfor %}
                 </select>
                 <button class="btn btn-sm btn-outline-primary mt-2" type="button" data-bs-toggle="modal" data-bs-target="#customerModal">+ Agregar cliente nuevo</button>
+              </div>
+              <div class="col-md-6 d-none" id="afe-receptor-block">
+                <label class="form-label">Receptor</label>
+                <div class="form-control-plaintext">Emisor (Autofactura)</div>
+                <div class="small text-muted">En AFE el receptor debe ser el mismo emisor.</div>
               </div>
               <div class="col-md-6">
                 <label class="form-label">Tipo de documento</label>
@@ -5138,6 +5320,63 @@ def invoice_new():
                     <option value="{{p}}" {% if p==default_pun %}selected{% endif %}>{{p}}</option>
                   {% endfor %}
                 </select>
+              </div>
+
+              <div class="col-12 d-none" id="afe-vendor-block">
+                <div class="card border-0 bg-light">
+                  <div class="card-body py-3">
+                    <h6 class="mb-3">Datos del vendedor (AFE)</h6>
+                    <div class="row g-3">
+                      <div class="col-md-4">
+                        <label class="form-label">Tipo vendedor</label>
+                        <select class="form-select" name="afe_tipo_vendedor" data-afe-required="1">
+                          {% for code, label in afe_nat.items() %}
+                            <option value="{{code}}">{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Tipo doc. identidad</label>
+                        <select class="form-select" name="afe_tipo_doc" data-afe-required="1">
+                          {% for code, label in afe_id.items() %}
+                            <option value="{{code}}">{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Nro doc. identidad</label>
+                        <input class="form-control" name="afe_nro_doc" data-afe-required="1" placeholder="Documento">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Nombre / Razón social</label>
+                        <input class="form-control" name="afe_nombre" data-afe-required="1" placeholder="Nombre del vendedor">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Dirección</label>
+                        <input class="form-control" name="afe_direccion" data-afe-required="1" placeholder="Dirección">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">N° casa</label>
+                        <input class="form-control mono" name="afe_num_casa" data-afe-required="1" value="0">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Departamento (código)</label>
+                        <input class="form-control mono" name="afe_departamento" data-afe-required="1" placeholder="12">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Distrito (código)</label>
+                        <input class="form-control mono" name="afe_distrito" placeholder="(opcional)">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Ciudad (código)</label>
+                        <input class="form-control mono" name="afe_ciudad" data-afe-required="1" placeholder="6106">
+                      </div>
+                    </div>
+                    <div class="small text-muted mt-2">
+                      Campos mínimos para gCamAE (E300). Departamento/Ciudad deben ser códigos válidos.
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div class="col-12"><hr></div>
@@ -5262,6 +5501,36 @@ def invoice_new():
 
             <script>
               (function () {
+                const docTypeSelect = document.querySelector('select[name="doc_type"]');
+                const customerBlock = document.getElementById("customer-block");
+                const customerSelect = document.getElementById("customer-select");
+                const afeReceptorBlock = document.getElementById("afe-receptor-block");
+                const afeVendorBlock = document.getElementById("afe-vendor-block");
+
+                function toggleAfe() {
+                  const isAfe = docTypeSelect && docTypeSelect.value === "4";
+                  if (customerBlock) customerBlock.classList.toggle("d-none", isAfe);
+                  if (customerSelect) {
+                    customerSelect.disabled = !!isAfe;
+                    customerSelect.required = !isAfe;
+                  }
+                  if (afeReceptorBlock) afeReceptorBlock.classList.toggle("d-none", !isAfe);
+                  if (afeVendorBlock) {
+                    afeVendorBlock.classList.toggle("d-none", !isAfe);
+                    afeVendorBlock.querySelectorAll("input, select, textarea").forEach((el) => {
+                      el.disabled = !isAfe;
+                    });
+                    afeVendorBlock.querySelectorAll("[data-afe-required]").forEach((el) => {
+                      el.required = !!isAfe;
+                    });
+                  }
+                }
+
+                if (docTypeSelect) {
+                  docTypeSelect.addEventListener("change", toggleAfe);
+                  toggleAfe();
+                }
+
                 const container = document.getElementById("items-container");
                 const addBtn = document.getElementById("add-item");
                 if (!container || !addBtn) return;
@@ -5425,6 +5694,8 @@ def invoice_new():
         default_pun=default_pun,
         available_pun=available_pun,
         products=products,
+        afe_nat=AFE_NAT_MAP,
+        afe_id=AFE_ID_MAP,
     )
     return render_template_string(BASE_HTML, title="Factura nueva", db_path=DB_PATH, body=body)
 
@@ -5466,6 +5737,8 @@ def invoice_detail(invoice_id: int):
     t_ent = transport.get("entrega") or {}
     t_veh = transport.get("vehiculo") or {}
     t_trn = transport.get("transportista") or {}
+    afe_vendor = _afe_vendor_from_extra(extra_parsed) if doc_type == "4" else {}
+    afe_form = _afe_vendor_form_values(afe_vendor) if doc_type == "4" else {}
 
     body = render_template_string(
         """
@@ -5473,7 +5746,7 @@ def invoice_detail(invoice_id: int):
           <div>
             <h4 class="mb-0">Documento #{{inv.id}}</h4>
             <div class="text-muted">
-              {{inv.customer_name}} — <span class="mono">{{inv.customer_ruc or "—"}}</span><br>
+              {% if doc_type == "4" %}Autofactura (Emisor){% else %}{{inv.customer_name}}{% endif %} — <span class="mono">{{inv.customer_ruc or "—"}}</span><br>
               Tipo: <b>{{ doc_type_label(inv.doc_type) }}</b> (<span class="mono">iTiDE={{ inv.doc_type or "1" }}</span>)
               <br>Est/Pun: <span class="mono">{{ (inv.establishment or "001") }}-{{ (inv.point_exp or "001") }}</span>
             </div>
@@ -5554,7 +5827,7 @@ def invoice_detail(invoice_id: int):
                 <hr>
                 <h6>Emisión integrada</h6>
                 <div class="small text-muted mb-2">
-                  Email cliente: <span class="mono">{{ inv.customer_email or "—" }}</span>
+                  Email cliente: <span class="mono">{% if doc_type == "4" %}—{% else %}{{ inv.customer_email or "—" }}{% endif %}</span>
                 </div>
                 <div class="small text-muted mb-2">
                   Tipo: <b>{{ doc_type_label(inv.doc_type) }}</b> — si no es Factura, configurá la plantilla específica en /settings.
@@ -5564,6 +5837,62 @@ def invoice_detail(invoice_id: int):
                   <textarea class="form-control form-control-sm mono" name="doc_extra_json" rows="8" placeholder="{}">{{ extra_prefill or "" }}</textarea>
                   <button class="btn btn-sm btn-outline-secondary mt-2" type="submit">Guardar JSON extra</button>
                 </form>
+                {% if doc_type == "4" %}
+                <div class="card mt-3">
+                  <div class="card-body">
+                    <h6>Datos del vendedor (AFE)</h6>
+                    <form method="post" action="{{ url_for('invoice_set_afe_vendedor', invoice_id=inv.id) }}">
+                      <div class="row g-2">
+                        <div class="col-md-4">
+                          <label class="form-label small">Tipo vendedor</label>
+                          <select class="form-select form-select-sm" name="afe_tipo_vendedor" required>
+                            {% for code, label in afe_nat.items() %}
+                              <option value="{{code}}" {% if afe_form.tipo_vendedor==code %}selected{% endif %}>{{label}}</option>
+                            {% endfor %}
+                          </select>
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label small">Tipo doc. identidad</label>
+                          <select class="form-select form-select-sm" name="afe_tipo_doc" required>
+                            {% for code, label in afe_id.items() %}
+                              <option value="{{code}}" {% if afe_form.tipo_doc==code %}selected{% endif %}>{{label}}</option>
+                            {% endfor %}
+                          </select>
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label small">Nro doc. identidad</label>
+                          <input class="form-control form-control-sm" name="afe_nro_doc" value="{{ afe_form.nro_doc }}" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label small">Nombre / Razón social</label>
+                          <input class="form-control form-control-sm" name="afe_nombre" value="{{ afe_form.nombre }}" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label small">Dirección</label>
+                          <input class="form-control form-control-sm" name="afe_direccion" value="{{ afe_form.direccion }}" required>
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label small">N° casa</label>
+                          <input class="form-control form-control-sm mono" name="afe_num_casa" value="{{ afe_form.num_casa or '0' }}" required>
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label small">Departamento (código)</label>
+                          <input class="form-control form-control-sm mono" name="afe_departamento" value="{{ afe_form.departamento }}" required>
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label small">Distrito (código)</label>
+                          <input class="form-control form-control-sm mono" name="afe_distrito" value="{{ afe_form.distrito }}">
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label small">Ciudad (código)</label>
+                          <input class="form-control form-control-sm mono" name="afe_ciudad" value="{{ afe_form.ciudad }}" required>
+                        </div>
+                      </div>
+                      <button class="btn btn-sm btn-outline-primary mt-2" type="submit">Guardar vendedor AFE</button>
+                    </form>
+                  </div>
+                </div>
+                {% endif %}
                 {% if inv.doc_type == "7" %}
                 <div class="card mt-3">
                   <div class="card-body">
@@ -6095,6 +6424,9 @@ def invoice_detail(invoice_id: int):
         resp_flete=RESP_FLETE_MAP,
         event_motivos=EVENT_MOTIVOS,
         default_env=get_setting("default_env", "prod") or "prod",
+        afe_nat=AFE_NAT_MAP,
+        afe_id=AFE_ID_MAP,
+        afe_form=afe_form,
     )
     return render_template_string(BASE_HTML, title=f"Documento #{invoice_id}", db_path=DB_PATH, body=body)
 
@@ -6114,6 +6446,53 @@ def invoice_set_extra(invoice_id: int):
     con = get_db()
     extra = (request.form.get("doc_extra_json") or "").strip()
     con.execute("UPDATE invoices SET doc_extra_json=? WHERE id=?", (extra, invoice_id))
+    con.commit()
+    return redirect(url_for("invoice_detail", invoice_id=invoice_id))
+
+@app.route("/invoice/<int:invoice_id>/set_afe_vendedor", methods=["POST"])
+def invoice_set_afe_vendedor(invoice_id: int):
+    init_db()
+    con = get_db()
+    inv = con.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+    if not inv:
+        abort(404)
+    doc_type = normalize_doc_type(inv["doc_type"])
+    if doc_type != "4":
+        abort(400, "Solo disponible para Autofactura (iTiDE=4).")
+    try:
+        extra = _parse_extra_json(inv["doc_extra_json"], doc_type)
+    except Exception:
+        extra = _default_extra_json_for(doc_type) or {}
+
+    def _clean_digits(value: Optional[str]) -> str:
+        return re.sub(r"\D", "", (value or "").strip())
+
+    def _clean_text(value: Optional[str]) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip())
+
+    vendor = {
+        "iNatVen": (request.form.get("afe_tipo_vendedor") or "").strip(),
+        "iTipIDVen": (request.form.get("afe_tipo_doc") or "").strip(),
+        "documento": _clean_text(request.form.get("afe_nro_doc")),
+        "nombre": _clean_text(request.form.get("afe_nombre")),
+        "direccion": _clean_text(request.form.get("afe_direccion")),
+        "numCasa": _clean_digits(request.form.get("afe_num_casa")),
+        "departamentoVendedor": _clean_digits(request.form.get("afe_departamento")),
+        "distritoVendedor": _clean_digits(request.form.get("afe_distrito")),
+        "ciudadVendedor": _clean_digits(request.form.get("afe_ciudad")),
+    }
+    extra = extra or {}
+    extra["documentoAsociado"] = {"tipoDocumentoAsoc": "3"}
+    _set_afe_vendor_extra(extra, vendor)
+
+    errors = _validate_doc_extra(doc_type, extra)
+    if errors:
+        abort(400, "En Autofactura debes completar los datos del vendedor.\n- " + "\n- ".join(errors))
+
+    con.execute(
+        "UPDATE invoices SET doc_extra_json=? WHERE id=?",
+        (json.dumps(extra, ensure_ascii=False), invoice_id),
+    )
     con.commit()
     return redirect(url_for("invoice_detail", invoice_id=invoice_id))
 
@@ -6811,7 +7190,7 @@ def _process_invoice_emit(invoice_id: int, env: str, async_mode: bool) -> str:
                 response_xml = resp_path.read_text(encoding="utf-8")
 
     # enviar email con PDF si aprobado
-    if inv["customer_email"] and (new_status == "CONFIRMED_OK"):
+    if doc_type != "4" and inv["customer_email"] and (new_status == "CONFIRMED_OK"):
         try:
             issuer = _build_issuer_from_xml_text(signed_qr_text) or _build_issuer_from_template(template_path)
             pdf_base_dir = base_dir or (_artifacts_root() / f"webui_emit_{invoice_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")

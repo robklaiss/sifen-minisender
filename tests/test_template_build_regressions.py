@@ -18,8 +18,14 @@ def _doc_extra_for(doc_type: str) -> dict:
     if doc_type == "4":
         extra["documentoAsociado"] = {"tipoDocumentoAsoc": "3"}
         extra.setdefault("autofactura", {})
+        extra["autofactura"].setdefault("iNatVen", "1")
+        extra["autofactura"].setdefault("iTipIDVen", "1")
         extra["autofactura"].setdefault("documento", "123456")
         extra["autofactura"].setdefault("nombre", "Vendedor")
+        extra["autofactura"].setdefault("direccion", "Direccion")
+        extra["autofactura"].setdefault("numCasa", "0")
+        extra["autofactura"].setdefault("departamentoVendedor", "12")
+        extra["autofactura"].setdefault("ciudadVendedor", "6106")
     if doc_type in ("5", "6"):
         extra["documentoAsociado"] = {
             "tipoDocumentoAsoc": "1",

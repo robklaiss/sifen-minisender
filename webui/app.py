@@ -3223,7 +3223,7 @@ BASE_HTML = """
     .backup-toast {
       position: fixed;
       right: 20px;
-      bottom: 20px;
+      bottom: 84px;
       background: #198754;
       color: #fff;
       padding: 10px 14px;
@@ -3241,6 +3241,25 @@ BASE_HTML = """
       opacity: 1;
       transform: translateY(0);
     }
+    .status-toast {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      background: #6c757d;
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 8px;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+      z-index: 10000;
+      max-width: 520px;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .status-toast.ok { background: #198754; }
+    .status-toast.down { background: #dc3545; }
+    .status-toast .status-detail { font-size: 12px; opacity: 0.85; }
   </style>
 </head>
 <body>
@@ -3260,7 +3279,6 @@ BASE_HTML = """
         </a>
         <a class="btn btn-outline-secondary" href="{{ url_for('customers') }}">Clientes</a>
         <a class="btn btn-outline-secondary" href="{{ url_for('products') }}">Productos</a>
-        <a class="btn btn-outline-secondary" href="{{ url_for('send_lote_page') }}">Enviar lote XML</a>
         <a class="btn btn-primary" href="{{ url_for('invoice_new') }}">Documento nuevo</a>
       </div>
     </div>
@@ -3268,9 +3286,51 @@ BASE_HTML = """
     {{ body|safe }}
 
   </div>
+  <div id="sifen-status-toast" class="status-toast pending" title="SIFEN: verificando...">
+    <div class="status-title">SIFEN: verificando...</div>
+    <div class="status-detail"></div>
+  </div>
   <div id="backup-toast" class="backup-toast"></div>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script>
+    (function () {
+      const toast = document.getElementById("sifen-status-toast");
+      if (!toast) return;
+      const titleEl = toast.querySelector(".status-title");
+      const detailEl = toast.querySelector(".status-detail");
+
+      function setStatus(ok, detail) {
+        toast.classList.remove("ok", "down", "pending");
+        if (ok === true) {
+          toast.classList.add("ok");
+          titleEl.textContent = "SIFEN: DISPONIBLE";
+        } else if (ok === false) {
+          toast.classList.add("down");
+          titleEl.textContent = "SIFEN: NO DISPONIBLE";
+        } else {
+          toast.classList.add("pending");
+          titleEl.textContent = "SIFEN: verificando...";
+        }
+        const detailText = (detail || "").toString().trim();
+        detailEl.textContent = detailText;
+        detailEl.style.display = detailText ? "block" : "none";
+        toast.title = detailText || titleEl.textContent;
+      }
+
+      async function check() {
+        try {
+          const res = await fetch("/api/sifen/status", { cache: "no-store" });
+          if (!res.ok) return;
+          const data = await res.json();
+          setStatus(Boolean(data.ok), data.detail || data.text || "");
+        } catch (e) {}
+      }
+
+      setStatus(null, "");
+      check();
+      setInterval(check, 30000);
+    })();
+
     (function () {
       const toast = document.getElementById("backup-toast");
       if (!toast) return;
@@ -3564,6 +3624,44 @@ def _diagnostics_consult_cdc(env: str, cdc: str) -> dict:
         }
     finally:
         client.close()
+
+def _run_sifen_preflight() -> dict:
+    script_path = (BASE_DIR / "tools" / "sifen_preflight.sh").resolve()
+    if not script_path.exists():
+        return {
+            "ok": False,
+            "text": "SIFEN_PREFLIGHT_MISSING",
+            "detail": f"missing {script_path}",
+        }
+    try:
+        result = subprocess.run(
+            ["/bin/bash", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=str(BASE_DIR),
+        )
+        stdout = (result.stdout or "").strip()
+        detail = stdout[:300]
+        if stdout:
+            text = stdout.splitlines()[0].strip()[:120]
+        else:
+            text = "SIFEN_OK" if result.returncode == 0 else "SIFEN_DOWN"
+        return {
+            "ok": result.returncode == 0,
+            "text": text,
+            "detail": detail,
+        }
+    except subprocess.TimeoutExpired as exc:
+        stdout = (getattr(exc, "stdout", None) or getattr(exc, "output", None) or "").strip()
+        detail = stdout[:300] if stdout else "timeout after 10s"
+        return {"ok": False, "text": "SIFEN_TIMEOUT", "detail": detail}
+    except Exception as exc:
+        return {"ok": False, "text": "SIFEN_ERROR", "detail": str(exc)[:300]}
+
+@app.get("/api/sifen/status")
+def sifen_status():
+    return jsonify(_run_sifen_preflight())
 
 @app.route("/backup/status")
 def backup_status():

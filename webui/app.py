@@ -3486,12 +3486,31 @@ BASE_HTML = """
         </a>
         <a class="btn btn-outline-secondary" href="{{ url_for('customers') }}">Clientes</a>
         <a class="btn btn-outline-secondary" href="{{ url_for('products') }}">Productos</a>
-        <a class="btn btn-primary" href="{{ url_for('invoice_new') }}">Documento nuevo</a>
+        <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#newDocModal">Documento nuevo</button>
       </div>
     </div>
 
     {{ body|safe }}
 
+  </div>
+  <div class="modal fade" id="newDocModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Documento nuevo</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="d-grid gap-2">
+            <a class="btn btn-outline-primary" href="{{ url_for('invoice_new', doc_type=1) }}">Factura electrónica (1)</a>
+            <a class="btn btn-outline-primary" href="{{ url_for('invoice_new', doc_type=4) }}">Autofactura electrónica (4)</a>
+            <a class="btn btn-outline-primary" href="{{ url_for('invoice_new', doc_type=5) }}">Nota de crédito electrónica (5)</a>
+            <a class="btn btn-outline-primary" href="{{ url_for('invoice_new', doc_type=6) }}">Nota de débito electrónica (6)</a>
+            <a class="btn btn-outline-primary" href="{{ url_for('invoice_new', doc_type=7) }}">Nota de remisión electrónica (7)</a>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
   <div id="sifen-status-toast" class="status-toast pending" title="SIFEN: verificando..." role="status" aria-live="polite">
     <span class="status-label">SIFEN</span>
@@ -5174,121 +5193,118 @@ def invoice_new():
     if not available_pun:
         available_pun = [default_pun or "001"]
 
-    if request.method == "POST":
-        doc_type = normalize_doc_type(request.form.get("doc_type"))
-        doc_extra_json = None
-        customer_id = int(request.form.get("customer_id") or "0")
-        if doc_type == "4":
-            # customer_id se usa solo por restricción del modelo actual;
-            # en AFE el receptor real se fuerza a emisor en XML.
-            row = con.execute(
-                "SELECT id FROM customers WHERE deleted_at IS NULL ORDER BY id ASC LIMIT 1"
-            ).fetchone()
-            if row:
-                customer_id = int(row["id"])
-            else:
-                con.execute(
-                    "INSERT INTO customers (name, ruc, created_at) VALUES (?,?,?)",
-                    ("Cliente Demo S.A.", "80012345-6", now_iso()),
+    def _clean_digits(value: Optional[str]) -> str:
+        return re.sub(r"\D", "", (value or "").strip())
+
+    def _clean_text(value: Optional[str]) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip())
+
+    selected_doc_type = normalize_doc_type(
+        request.form.get("doc_type") if request.method == "POST" else request.args.get("doc_type")
+    )
+
+    def _form_value(name: str, default: str = "") -> str:
+        if request.method == "POST":
+            return (request.form.get(name) or "").strip()
+        return default
+
+    form_values = {
+        "doc_type": selected_doc_type,
+        "customer_id": _form_value("customer_id", ""),
+        "establishment": _form_value("establishment", default_est),
+        "point_exp": _form_value("point_exp", default_pun),
+        # AFE
+        "afe_tipo_vendedor": _form_value("afe_tipo_vendedor", ""),
+        "afe_tipo_doc": _form_value("afe_tipo_doc", ""),
+        "afe_nro_doc": _form_value("afe_nro_doc", ""),
+        "afe_nombre": _form_value("afe_nombre", ""),
+        "afe_direccion": _form_value("afe_direccion", ""),
+        "afe_num_casa": _form_value("afe_num_casa", "0"),
+        "afe_departamento": _form_value("afe_departamento", ""),
+        "afe_distrito": _form_value("afe_distrito", ""),
+        "afe_ciudad": _form_value("afe_ciudad", ""),
+        # NC/ND
+        "nc_doc_asoc_tipo": _form_value("nc_doc_asoc_tipo", "1"),
+        "nc_cdc_asoc": _form_value("nc_cdc_asoc", ""),
+        "nc_timbrado_asoc": _form_value("nc_timbrado_asoc", ""),
+        "nc_est_asoc": _form_value("nc_est_asoc", ""),
+        "nc_pun_asoc": _form_value("nc_pun_asoc", ""),
+        "nc_num_asoc": _form_value("nc_num_asoc", ""),
+        "nc_tipo_doc_imp": _form_value("nc_tipo_doc_imp", ""),
+        "nc_fecha_doc_imp": _form_value("nc_fecha_doc_imp", ""),
+        "nc_motivo": _form_value("nc_motivo", "1"),
+        # NRE
+        "nre_motivo": _form_value("nre_motivo", "1"),
+        "nre_responsable": _form_value("nre_responsable", "1"),
+        "nre_km": _form_value("nre_km", ""),
+        "nre_fecha_factura": _form_value("nre_fecha_factura", ""),
+        "nre_trans_tipo": _form_value("nre_trans_tipo", ""),
+        "nre_trans_modalidad": _form_value("nre_trans_modalidad", "1"),
+        "nre_trans_resp_flete": _form_value("nre_trans_resp_flete", "1"),
+        "nre_sal_direccion": _form_value("nre_sal_direccion", ""),
+        "nre_sal_num_casa": _form_value("nre_sal_num_casa", ""),
+        "nre_sal_departamento": _form_value("nre_sal_departamento", ""),
+        "nre_sal_distrito": _form_value("nre_sal_distrito", ""),
+        "nre_sal_ciudad": _form_value("nre_sal_ciudad", ""),
+        "nre_sal_telefono": _form_value("nre_sal_telefono", ""),
+        "nre_ent_direccion": _form_value("nre_ent_direccion", ""),
+        "nre_ent_num_casa": _form_value("nre_ent_num_casa", ""),
+        "nre_ent_departamento": _form_value("nre_ent_departamento", ""),
+        "nre_ent_distrito": _form_value("nre_ent_distrito", ""),
+        "nre_ent_ciudad": _form_value("nre_ent_ciudad", ""),
+        "nre_ent_telefono": _form_value("nre_ent_telefono", ""),
+        "nre_veh_tipo": _form_value("nre_veh_tipo", "1"),
+        "nre_veh_marca": _form_value("nre_veh_marca", ""),
+        "nre_veh_doc_tipo": _form_value("nre_veh_doc_tipo", "1"),
+        "nre_veh_numero": _form_value("nre_veh_numero", ""),
+        "nre_transp_tipo": _form_value("nre_transp_tipo", "1"),
+        "nre_transp_nombre": _form_value("nre_transp_nombre", ""),
+        "nre_transp_numero": _form_value("nre_transp_numero", ""),
+        "nre_transp_tipo_doc": _form_value("nre_transp_tipo_doc", ""),
+        "nre_transp_dir": _form_value("nre_transp_dir", ""),
+        "nre_transp_nacionalidad": _form_value("nre_transp_nacionalidad", ""),
+        "nre_chof_nombre": _form_value("nre_chof_nombre", ""),
+        "nre_chof_numero": _form_value("nre_chof_numero", ""),
+        "nre_chof_dir": _form_value("nre_chof_dir", ""),
+    }
+
+    def _build_items_form() -> list[dict]:
+        if request.method == "POST":
+            descs = request.form.getlist("description")
+            qtys = request.form.getlist("qty")
+            prices = request.form.getlist("price_unit")
+            product_ids = request.form.getlist("product_id")
+            max_len = max(len(descs), len(qtys), len(prices), len(product_ids), 1)
+            items = []
+            for idx in range(max_len):
+                items.append(
+                    {
+                        "description": (descs[idx] if idx < len(descs) else "").strip(),
+                        "qty": (qtys[idx] if idx < len(qtys) else "1").strip() or "1",
+                        "price_unit": (prices[idx] if idx < len(prices) else "0").strip() or "0",
+                        "product_id": (product_ids[idx] if idx < len(product_ids) else "").strip(),
+                    }
                 )
-                customer_id = int(con.execute("SELECT last_insert_rowid()").fetchone()[0])
+            return items
+        return [{"description": "", "qty": "1", "price_unit": "0", "product_id": ""}]
 
-            def _clean_digits(value: Optional[str]) -> str:
-                return re.sub(r"\D", "", (value or "").strip())
+    items_form = _build_items_form()
 
-            def _clean_text(value: Optional[str]) -> str:
-                return re.sub(r"\s+", " ", (value or "").strip())
-
-            vendor = {
-                "iNatVen": (request.form.get("afe_tipo_vendedor") or "").strip(),
-                "iTipIDVen": (request.form.get("afe_tipo_doc") or "").strip(),
-                "documento": _clean_text(request.form.get("afe_nro_doc")),
-                "nombre": _clean_text(request.form.get("afe_nombre")),
-                "direccion": _clean_text(request.form.get("afe_direccion")),
-                "numCasa": _clean_digits(request.form.get("afe_num_casa")),
-                "departamentoVendedor": _clean_digits(request.form.get("afe_departamento")),
-                "distritoVendedor": _clean_digits(request.form.get("afe_distrito")),
-                "ciudadVendedor": _clean_digits(request.form.get("afe_ciudad")),
-            }
-            extra_json = {"documentoAsociado": {"tipoDocumentoAsoc": "3"}}
-            _set_afe_vendor_extra(extra_json, vendor)
-            errors = _validate_doc_extra(doc_type, extra_json)
-            if errors:
-                abort(400, "En Autofactura debes completar los datos del vendedor.\n- " + "\n- ".join(errors))
-            doc_extra_json = json.dumps(extra_json, ensure_ascii=False)
-        else:
-            if not customer_id:
-                abort(400, "customer_id requerido")
-            exists = con.execute(
-                "SELECT 1 FROM customers WHERE id=? AND deleted_at IS NULL",
-                (customer_id,),
-            ).fetchone()
-            if not exists:
-                abort(400, "Cliente inválido o eliminado.")
-
-        issued_at = now_iso()
-        est = _zfill_digits(request.form.get("establishment") or default_est, 3)
-        pun = _zfill_digits(request.form.get("point_exp") or default_pun, 3)
-        cur = con.execute(
-            "INSERT INTO invoices (created_at, issued_at, customer_id, status, doc_type, establishment, point_exp, doc_extra_json) VALUES (?,?,?,?,?,?,?,?)",
-            (now_iso(), issued_at, customer_id, "DRAFT", doc_type, est, pun, doc_extra_json),
-        )
-        invoice_id = cur.lastrowid
-
-        def _parse_int(value: Optional[str], default: int) -> int:
-            try:
-                raw = (value or "").strip()
-                return int(raw) if raw else default
-            except Exception:
-                return default
-
-        descs = request.form.getlist("description")
-        qtys = request.form.getlist("qty")
-        prices = request.form.getlist("price_unit")
-        product_ids = request.form.getlist("product_id")
-
-        inserted = 0
-        max_len = max(len(descs), len(qtys), len(prices))
-        for idx in range(max_len):
-            desc = (descs[idx] if idx < len(descs) else "").strip()
-            if not desc:
-                continue
-            qty = _parse_int(qtys[idx] if idx < len(qtys) else None, 1)
-            price_unit = _parse_int(prices[idx] if idx < len(prices) else None, 0)
-            prod_id_raw = (product_ids[idx] if idx < len(product_ids) else "").strip()
-            prod_id = int(prod_id_raw) if prod_id_raw.isdigit() else None
-            line_total = qty * price_unit
-            con.execute(
-                "INSERT INTO invoice_lines (invoice_id, product_id, description, qty, price_unit, line_total) VALUES (?,?,?,?,?,?)",
-                (invoice_id, prod_id, desc, qty, price_unit, line_total),
-            )
-            inserted += 1
-
-        if inserted == 0:
-            desc = "Servicio"
-            qty = 1
-            price_unit = 0
-            line_total = qty * price_unit
-            con.execute(
-                "INSERT INTO invoice_lines (invoice_id, product_id, description, qty, price_unit, line_total) VALUES (?,?,?,?,?,?)",
-                (invoice_id, None, desc, qty, price_unit, line_total),
-            )
-        con.commit()
-        recompute_invoice_totals(invoice_id)
-
-        return redirect(url_for("invoice_detail", invoice_id=invoice_id))
-
-    body = render_template_string(
-        """
+    def _render_form(error: Optional[str] = None, status: int = 200):
+        body = render_template_string(
+            """
         <div class="card">
           <div class="card-body">
             <h5>Nuevo documento (mínimo viable)</h5>
-            <form method="post" class="row g-3">
+            {% if error %}
+              <div class="alert alert-danger mt-3" style="white-space: pre-line;">{{ error }}</div>
+            {% endif %}
+            <form method="post" class="row g-3 mt-1">
               <div class="col-md-6" id="customer-block">
                 <label class="form-label">Cliente</label>
                 <select class="form-select" name="customer_id" id="customer-select" required>
                   {% for c in customers %}
-                    <option value="{{c.id}}">{{c.name}} ({{c.ruc or "sin RUC"}})</option>
+                    <option value="{{c.id}}" {% if form.get("customer_id") == (c.id|string) %}selected{% endif %}>{{c.name}} ({{c.ruc or "sin RUC"}})</option>
                   {% endfor %}
                 </select>
                 <button class="btn btn-sm btn-outline-primary mt-2" type="button" data-bs-toggle="modal" data-bs-target="#customerModal">+ Agregar cliente nuevo</button>
@@ -5300,24 +5316,24 @@ def invoice_new():
               </div>
               <div class="col-md-6">
                 <label class="form-label">Tipo de documento</label>
-                <select class="form-select" name="doc_type" required>
-                  <option value="1">Factura electrónica</option>
-                  <option value="4">Autofactura electrónica</option>
-                  <option value="5">Nota de crédito electrónica</option>
-                  <option value="6">Nota de débito electrónica</option>
-                  <option value="7">Nota de remisión electrónica</option>
+                <select class="form-select" name="doc_type" id="doc-type-select" required>
+                  <option value="1" {% if form.get("doc_type") == "1" %}selected{% endif %}>Factura electrónica</option>
+                  <option value="4" {% if form.get("doc_type") == "4" %}selected{% endif %}>Autofactura electrónica</option>
+                  <option value="5" {% if form.get("doc_type") == "5" %}selected{% endif %}>Nota de crédito electrónica</option>
+                  <option value="6" {% if form.get("doc_type") == "6" %}selected{% endif %}>Nota de débito electrónica</option>
+                  <option value="7" {% if form.get("doc_type") == "7" %}selected{% endif %}>Nota de remisión electrónica</option>
                 </select>
               </div>
               <div class="col-12"></div>
               <div class="col-md-3">
                 <label class="form-label">Establecimiento</label>
-                <input class="form-control mono" name="establishment" value="{{ default_est }}" required>
+                <input class="form-control mono" name="establishment" value="{{ form.get('establishment') or default_est }}" required>
               </div>
               <div class="col-md-3">
                 <label class="form-label">Punto de expedición</label>
                 <select class="form-select mono" name="point_exp" required>
                   {% for p in available_pun %}
-                    <option value="{{p}}" {% if p==default_pun %}selected{% endif %}>{{p}}</option>
+                    <option value="{{p}}" {% if (form.get('point_exp') or default_pun) == p %}selected{% endif %}>{{p}}</option>
                   {% endfor %}
                 </select>
               </div>
@@ -5331,7 +5347,7 @@ def invoice_new():
                         <label class="form-label">Tipo vendedor</label>
                         <select class="form-select" name="afe_tipo_vendedor" data-afe-required="1">
                           {% for code, label in afe_nat.items() %}
-                            <option value="{{code}}">{{label}}</option>
+                            <option value="{{code}}" {% if form.get("afe_tipo_vendedor") == code %}selected{% endif %}>{{label}}</option>
                           {% endfor %}
                         </select>
                       </div>
@@ -5339,37 +5355,37 @@ def invoice_new():
                         <label class="form-label">Tipo doc. identidad</label>
                         <select class="form-select" name="afe_tipo_doc" data-afe-required="1">
                           {% for code, label in afe_id.items() %}
-                            <option value="{{code}}">{{label}}</option>
+                            <option value="{{code}}" {% if form.get("afe_tipo_doc") == code %}selected{% endif %}>{{label}}</option>
                           {% endfor %}
                         </select>
                       </div>
                       <div class="col-md-4">
                         <label class="form-label">Nro doc. identidad</label>
-                        <input class="form-control" name="afe_nro_doc" data-afe-required="1" placeholder="Documento">
+                        <input class="form-control" name="afe_nro_doc" data-afe-required="1" placeholder="Documento" value="{{ form.get('afe_nro_doc') }}">
                       </div>
                       <div class="col-md-6">
                         <label class="form-label">Nombre / Razón social</label>
-                        <input class="form-control" name="afe_nombre" data-afe-required="1" placeholder="Nombre del vendedor">
+                        <input class="form-control" name="afe_nombre" data-afe-required="1" placeholder="Nombre del vendedor" value="{{ form.get('afe_nombre') }}">
                       </div>
                       <div class="col-md-6">
                         <label class="form-label">Dirección</label>
-                        <input class="form-control" name="afe_direccion" data-afe-required="1" placeholder="Dirección">
+                        <input class="form-control" name="afe_direccion" data-afe-required="1" placeholder="Dirección" value="{{ form.get('afe_direccion') }}">
                       </div>
                       <div class="col-md-3">
                         <label class="form-label">N° casa</label>
-                        <input class="form-control mono" name="afe_num_casa" data-afe-required="1" value="0">
+                        <input class="form-control mono" name="afe_num_casa" data-afe-required="1" value="{{ form.get('afe_num_casa') or '0' }}">
                       </div>
                       <div class="col-md-3">
                         <label class="form-label">Departamento (código)</label>
-                        <input class="form-control mono" name="afe_departamento" data-afe-required="1" placeholder="12">
+                        <input class="form-control mono" name="afe_departamento" data-afe-required="1" placeholder="12" value="{{ form.get('afe_departamento') }}">
                       </div>
                       <div class="col-md-3">
                         <label class="form-label">Distrito (código)</label>
-                        <input class="form-control mono" name="afe_distrito" placeholder="(opcional)">
+                        <input class="form-control mono" name="afe_distrito" placeholder="(opcional)" value="{{ form.get('afe_distrito') }}">
                       </div>
                       <div class="col-md-3">
                         <label class="form-label">Ciudad (código)</label>
-                        <input class="form-control mono" name="afe_ciudad" data-afe-required="1" placeholder="6106">
+                        <input class="form-control mono" name="afe_ciudad" data-afe-required="1" placeholder="6106" value="{{ form.get('afe_ciudad') }}">
                       </div>
                     </div>
                     <div class="small text-muted mt-2">
@@ -5379,31 +5395,288 @@ def invoice_new():
                 </div>
               </div>
 
+              <div class="col-12 d-none" id="ncnd-block">
+                <div class="card border-0 bg-light">
+                  <div class="card-body py-3">
+                    <h6 class="mb-3">Nota de crédito / débito</h6>
+                    <div class="row g-3">
+                      <div class="col-md-4">
+                        <label class="form-label">Motivo</label>
+                        <select class="form-select" name="nc_motivo" id="nc-motivo" data-nc-required="1">
+                          {% for code, label in nc_motivos.items() %}
+                            <option value="{{code}}" {% if form.get("nc_motivo") == code %}selected{% endif %}>{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Documento asociado</label>
+                        <select class="form-select" name="nc_doc_asoc_tipo" id="nc-doc-asoc-type" data-nc-required="1">
+                          <option value="1" {% if form.get("nc_doc_asoc_tipo") == "1" %}selected{% endif %}>Electrónico (CDC)</option>
+                          <option value="2" {% if form.get("nc_doc_asoc_tipo") == "2" %}selected{% endif %}>Impreso</option>
+                        </select>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">CDC asociado</label>
+                        <input class="form-control mono" name="nc_cdc_asoc" id="nc-doc-asoc-cdc" data-nc-type1-required="1" placeholder="44 dígitos" value="{{ form.get('nc_cdc_asoc') }}">
+                      </div>
+                    </div>
+
+                    <div class="row g-3 mt-1 d-none" id="nc-doc-asoc-impreso">
+                      <div class="col-md-3">
+                        <label class="form-label">Timbrado</label>
+                        <input class="form-control mono" name="nc_timbrado_asoc" data-nc-type2-required="1" placeholder="8 dígitos" value="{{ form.get('nc_timbrado_asoc') }}">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Establecimiento</label>
+                        <input class="form-control mono" name="nc_est_asoc" data-nc-type2-required="1" placeholder="001" value="{{ form.get('nc_est_asoc') }}">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Punto exp.</label>
+                        <input class="form-control mono" name="nc_pun_asoc" data-nc-type2-required="1" placeholder="001" value="{{ form.get('nc_pun_asoc') }}">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Número</label>
+                        <input class="form-control mono" name="nc_num_asoc" data-nc-type2-required="1" placeholder="0000001" value="{{ form.get('nc_num_asoc') }}">
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Tipo doc. impreso</label>
+                        <select class="form-select" name="nc_tipo_doc_imp">
+                          <option value="">(opcional)</option>
+                          {% for code, label in doc_impreso_types.items() %}
+                            <option value="{{code}}" {% if form.get("nc_tipo_doc_imp") == code %}selected{% endif %}>{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Fecha doc. impreso</label>
+                        <input class="form-control" type="date" name="nc_fecha_doc_imp" value="{{ form.get('nc_fecha_doc_imp') }}">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="col-12 d-none" id="nre-block">
+                <div class="card border-0 bg-light">
+                  <div class="card-body py-3">
+                    <h6 class="mb-3">Nota de remisión</h6>
+                    <div class="row g-3">
+                      <div class="col-md-4">
+                        <label class="form-label">Motivo</label>
+                        <select class="form-select" name="nre_motivo" data-nre-required="1">
+                          {% for code, label in rem_motivos.items() %}
+                            <option value="{{code}}" {% if form.get("nre_motivo") == code %}selected{% endif %}>{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Responsable emisión</label>
+                        <select class="form-select" name="nre_responsable" data-nre-required="1">
+                          {% for code, label in rem_resp.items() %}
+                            <option value="{{code}}" {% if form.get("nre_responsable") == code %}selected{% endif %}>{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">KM estimado</label>
+                        <input class="form-control mono" name="nre_km" placeholder="0" value="{{ form.get('nre_km') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Fecha factura</label>
+                        <input class="form-control" type="date" name="nre_fecha_factura" value="{{ form.get('nre_fecha_factura') }}">
+                      </div>
+                    </div>
+
+                    <hr class="my-3">
+                    <div class="row g-3">
+                      <div class="col-md-4">
+                        <label class="form-label">Modalidad transporte</label>
+                        <select class="form-select" name="nre_trans_modalidad" data-nre-required="1">
+                          {% for code, label in trans_mod.items() %}
+                            <option value="{{code}}" {% if form.get("nre_trans_modalidad") == code %}selected{% endif %}>{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Responsable flete</label>
+                        <select class="form-select" name="nre_trans_resp_flete" data-nre-required="1">
+                          {% for code, label in resp_flete.items() %}
+                            <option value="{{code}}" {% if form.get("nre_trans_resp_flete") == code %}selected{% endif %}>{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Tipo transporte</label>
+                        <select class="form-select" name="nre_trans_tipo">
+                          <option value="">(opcional)</option>
+                          {% for code, label in trans_tipo.items() %}
+                            <option value="{{code}}" {% if form.get("nre_trans_tipo") == code %}selected{% endif %}>{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="row g-3 mt-1">
+                      <div class="col-12"><strong>Salida</strong></div>
+                      <div class="col-md-6">
+                        <label class="form-label">Dirección</label>
+                        <input class="form-control" name="nre_sal_direccion" data-nre-required="1" value="{{ form.get('nre_sal_direccion') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">N° casa</label>
+                        <input class="form-control mono" name="nre_sal_num_casa" data-nre-required="1" value="{{ form.get('nre_sal_num_casa') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Departamento</label>
+                        <input class="form-control mono" name="nre_sal_departamento" data-nre-required="1" placeholder="12" value="{{ form.get('nre_sal_departamento') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Ciudad</label>
+                        <input class="form-control mono" name="nre_sal_ciudad" data-nre-required="1" placeholder="6106" value="{{ form.get('nre_sal_ciudad') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Distrito</label>
+                        <input class="form-control mono" name="nre_sal_distrito" placeholder="(opcional)" value="{{ form.get('nre_sal_distrito') }}">
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Teléfono</label>
+                        <input class="form-control" name="nre_sal_telefono" value="{{ form.get('nre_sal_telefono') }}">
+                      </div>
+                    </div>
+
+                    <div class="row g-3 mt-2">
+                      <div class="col-12"><strong>Entrega</strong></div>
+                      <div class="col-md-6">
+                        <label class="form-label">Dirección</label>
+                        <input class="form-control" name="nre_ent_direccion" data-nre-required="1" value="{{ form.get('nre_ent_direccion') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">N° casa</label>
+                        <input class="form-control mono" name="nre_ent_num_casa" data-nre-required="1" value="{{ form.get('nre_ent_num_casa') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Departamento</label>
+                        <input class="form-control mono" name="nre_ent_departamento" data-nre-required="1" placeholder="12" value="{{ form.get('nre_ent_departamento') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Ciudad</label>
+                        <input class="form-control mono" name="nre_ent_ciudad" data-nre-required="1" placeholder="6106" value="{{ form.get('nre_ent_ciudad') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Distrito</label>
+                        <input class="form-control mono" name="nre_ent_distrito" placeholder="(opcional)" value="{{ form.get('nre_ent_distrito') }}">
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Teléfono</label>
+                        <input class="form-control" name="nre_ent_telefono" value="{{ form.get('nre_ent_telefono') }}">
+                      </div>
+                    </div>
+
+                    <div class="row g-3 mt-2">
+                      <div class="col-12"><strong>Vehículo</strong></div>
+                      <div class="col-md-3">
+                        <label class="form-label">Tipo</label>
+                        <select class="form-select" name="nre_veh_tipo" data-nre-required="1">
+                          {% for code, label in veh_tipos.items() %}
+                            <option value="{{code}}" {% if form.get("nre_veh_tipo") == code %}selected{% endif %}>{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Marca</label>
+                        <input class="form-control" name="nre_veh_marca" data-nre-required="1" value="{{ form.get('nre_veh_marca') }}">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Tipo documento</label>
+                        <select class="form-select" name="nre_veh_doc_tipo" data-nre-required="1">
+                          <option value="1" {% if form.get("nre_veh_doc_tipo") == "1" %}selected{% endif %}>Matrícula</option>
+                          <option value="2" {% if form.get("nre_veh_doc_tipo") == "2" %}selected{% endif %}>Otro ID</option>
+                        </select>
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Número ID</label>
+                        <input class="form-control" name="nre_veh_numero" data-nre-required="1" value="{{ form.get('nre_veh_numero') }}">
+                      </div>
+                    </div>
+
+                    <div class="row g-3 mt-2">
+                      <div class="col-12"><strong>Transportista</strong></div>
+                      <div class="col-md-3">
+                        <label class="form-label">Tipo</label>
+                        <select class="form-select" name="nre_transp_tipo" data-nre-required="1">
+                          <option value="1" {% if form.get("nre_transp_tipo") == "1" %}selected{% endif %}>Persona física</option>
+                          <option value="2" {% if form.get("nre_transp_tipo") == "2" %}selected{% endif %}>Persona jurídica</option>
+                        </select>
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Nombre</label>
+                        <input class="form-control" name="nre_transp_nombre" data-nre-required="1" value="{{ form.get('nre_transp_nombre') }}">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Número doc.</label>
+                        <input class="form-control" name="nre_transp_numero" data-nre-required="1" value="{{ form.get('nre_transp_numero') }}">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Tipo doc.</label>
+                        <select class="form-select" name="nre_transp_tipo_doc">
+                          <option value="">(opcional)</option>
+                          {% for code, label in afe_id.items() %}
+                            <option value="{{code}}" {% if form.get("nre_transp_tipo_doc") == code %}selected{% endif %}>{{label}}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Dirección transportista</label>
+                        <input class="form-control" name="nre_transp_dir" data-nre-required="1" value="{{ form.get('nre_transp_dir') }}">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Nacionalidad (código)</label>
+                        <input class="form-control mono" name="nre_transp_nacionalidad" placeholder="PRY" value="{{ form.get('nre_transp_nacionalidad') }}">
+                      </div>
+                      <div class="col-md-3"></div>
+                      <div class="col-md-3">
+                        <label class="form-label">Nombre chofer</label>
+                        <input class="form-control" name="nre_chof_nombre" data-nre-required="1" value="{{ form.get('nre_chof_nombre') }}">
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Número doc. chofer</label>
+                        <input class="form-control" name="nre_chof_numero" data-nre-required="1" value="{{ form.get('nre_chof_numero') }}">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Dirección chofer</label>
+                        <input class="form-control" name="nre_chof_dir" data-nre-required="1" value="{{ form.get('nre_chof_dir') }}">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div class="col-12"><hr></div>
 
               <div id="items-container">
+                {% for item in items %}
                 <div class="row g-3 item-row align-items-end">
                   <div class="col-md-5">
                     <label class="form-label">Descripción</label>
                     {% if products %}
                       <select class="form-select product-select" name="description" required>
-                        <option value="" selected>Seleccionar producto/servicio...</option>
+                        <option value="" {% if not item.description %}selected{% endif %}>Seleccionar producto/servicio...</option>
                         {% for p in products %}
-                          <option value="{{p.name}}" data-id="{{p.id}}" data-price="{{p.price_unit}}">{{p.name}}{% if p.sku %} ({{p.sku}}){% endif %}</option>
+                          <option value="{{p.name}}" data-id="{{p.id}}" data-price="{{p.price_unit}}" {% if item.description == p.name %}selected{% endif %}>{{p.name}}{% if p.sku %} ({{p.sku}}){% endif %}</option>
                         {% endfor %}
                       </select>
                     {% else %}
-                      <input class="form-control" name="description" value="Servicio" required>
+                      <input class="form-control" name="description" value="{{ item.description or 'Servicio' }}" required>
                     {% endif %}
-                    <input type="hidden" name="product_id" value="">
+                    <input type="hidden" name="product_id" value="{{ item.product_id }}">
                   </div>
                   <div class="col-md-2">
                     <label class="form-label">Cantidad</label>
-                    <input class="form-control" name="qty" type="number" value="1" required>
+                    <input class="form-control" name="qty" type="number" value="{{ item.qty or '1' }}" required>
                   </div>
                   <div class="col-md-3">
                     <label class="form-label">Precio unitario (PYG)</label>
-                    <input class="form-control" name="price_unit" type="number" value="0" required>
+                    <input class="form-control" name="price_unit" type="number" value="{{ item.price_unit or '0' }}" required>
                   </div>
                   <div class="col-md-2">
                     <label class="form-label d-block">&nbsp;</label>
@@ -5412,6 +5685,7 @@ def invoice_new():
                     </button>
                   </div>
                 </div>
+                {% endfor %}
               </div>
               <div class="col-12">
                 <button class="btn btn-sm btn-outline-secondary" type="button" id="add-item">+ Agregar ítem</button>
@@ -5419,7 +5693,7 @@ def invoice_new():
               </div>
 
               <div class="col-12 d-flex gap-2">
-                <button class="btn btn-primary" type="submit">Crear factura</button>
+                <button class="btn btn-primary" type="submit">Crear documento</button>
                 <a class="btn btn-outline-secondary" href="{{ url_for('invoices') }}">Cancelar</a>
               </div>
             </form>
@@ -5501,14 +5775,31 @@ def invoice_new():
 
             <script>
               (function () {
-                const docTypeSelect = document.querySelector('select[name="doc_type"]');
+                const docTypeSelect = document.getElementById("doc-type-select");
                 const customerBlock = document.getElementById("customer-block");
                 const customerSelect = document.getElementById("customer-select");
                 const afeReceptorBlock = document.getElementById("afe-receptor-block");
                 const afeVendorBlock = document.getElementById("afe-vendor-block");
+                const ncndBlock = document.getElementById("ncnd-block");
+                const ncDocAsocType = document.getElementById("nc-doc-asoc-type");
+                const ncDocAsocImpreso = document.getElementById("nc-doc-asoc-impreso");
+                const ncDocAsocCdc = document.getElementById("nc-doc-asoc-cdc");
+                const nreBlock = document.getElementById("nre-block");
 
-                function toggleAfe() {
-                  const isAfe = docTypeSelect && docTypeSelect.value === "4";
+                function toggleSection(section, enabled) {
+                  if (!section) return;
+                  section.classList.toggle("d-none", !enabled);
+                  section.querySelectorAll("input, select, textarea").forEach((el) => {
+                    el.disabled = !enabled;
+                  });
+                }
+
+                function toggleDocSections() {
+                  const val = docTypeSelect ? docTypeSelect.value : "1";
+                  const isAfe = val === "4";
+                  const isNcNd = val === "5" || val === "6";
+                  const isNre = val === "7";
+
                   if (customerBlock) customerBlock.classList.toggle("d-none", isAfe);
                   if (customerSelect) {
                     customerSelect.disabled = !!isAfe;
@@ -5524,12 +5815,47 @@ def invoice_new():
                       el.required = !!isAfe;
                     });
                   }
+
+                  toggleSection(ncndBlock, isNcNd);
+                  if (ncndBlock) {
+                    ncndBlock.querySelectorAll("[data-nc-required]").forEach((el) => {
+                      el.required = isNcNd;
+                    });
+                    const asocType = ncDocAsocType ? ncDocAsocType.value : "1";
+                    const isType1 = isNcNd && asocType === "1";
+                    const isType2 = isNcNd && asocType === "2";
+                    if (ncDocAsocCdc) {
+                      const cdcWrap = ncDocAsocCdc.closest(".col-md-4");
+                      if (cdcWrap) cdcWrap.classList.toggle("d-none", !isType1);
+                    }
+                    toggleSection(ncDocAsocImpreso, isType2);
+                    if (ncDocAsocCdc) {
+                      ncDocAsocCdc.disabled = !isType1;
+                      ncDocAsocCdc.required = isType1;
+                    }
+                    if (ncDocAsocImpreso) {
+                      ncDocAsocImpreso.querySelectorAll("[data-nc-type2-required]").forEach((el) => {
+                        el.required = isType2;
+                      });
+                    }
+                  }
+
+                  toggleSection(nreBlock, isNre);
+                  if (nreBlock) {
+                    nreBlock.querySelectorAll("[data-nre-required]").forEach((el) => {
+                      el.required = isNre;
+                    });
+                  }
                 }
 
                 if (docTypeSelect) {
-                  docTypeSelect.addEventListener("change", toggleAfe);
-                  toggleAfe();
+                  docTypeSelect.addEventListener("change", toggleDocSections);
                 }
+                if (ncDocAsocType) {
+                  ncDocAsocType.addEventListener("change", toggleDocSections);
+                }
+                document.addEventListener("DOMContentLoaded", toggleDocSections);
+                toggleDocSections();
 
                 const container = document.getElementById("items-container");
                 const addBtn = document.getElementById("add-item");
@@ -5570,8 +5896,7 @@ def invoice_new():
                   row.remove();
                 });
 
-                container.addEventListener("change", function (ev) {
-                  const sel = ev.target.closest(".product-select");
+                function syncProductMeta(sel) {
                   if (!sel) return;
                   const row = sel.closest(".item-row");
                   if (!row) return;
@@ -5581,9 +5906,16 @@ def invoice_new():
                   const pid = opt.getAttribute("data-id") || "";
                   const priceInput = row.querySelector('input[name="price_unit"]');
                   const pidInput = row.querySelector('input[name="product_id"]');
-                  if (priceInput && price) priceInput.value = price;
-                  if (pidInput) pidInput.value = pid;
+                  if (priceInput && price && !priceInput.value) priceInput.value = price;
+                  if (pidInput && pid && !pidInput.value) pidInput.value = pid;
+                }
+
+                container.addEventListener("change", function (ev) {
+                  const sel = ev.target.closest(".product-select");
+                  if (!sel) return;
+                  syncProductMeta(sel);
                 });
+                container.querySelectorAll(".product-select").forEach((sel) => syncProductMeta(sel));
 
                 const quickForm = document.getElementById("quick-product-form");
                 const errBox = document.getElementById("quick-product-error");
@@ -5642,8 +5974,8 @@ def invoice_new():
 
                 const quickCustomerForm = document.getElementById("quick-customer-form");
                 const customerErr = document.getElementById("quick-customer-error");
-                const customerSelect = document.getElementById("customer-select");
-                if (quickCustomerForm && customerSelect) {
+                const customerSelectEl = customerSelect;
+                if (quickCustomerForm && customerSelectEl) {
                   quickCustomerForm.addEventListener("submit", async function (ev) {
                     ev.preventDefault();
                     if (customerErr) { customerErr.classList.add("d-none"); customerErr.textContent = ""; }
@@ -5668,8 +6000,8 @@ def invoice_new():
                       const opt = document.createElement("option");
                       opt.value = out.id;
                       opt.textContent = label;
-                      customerSelect.appendChild(opt);
-                      customerSelect.value = String(out.id);
+                      customerSelectEl.appendChild(opt);
+                      customerSelectEl.value = String(out.id);
                       quickCustomerForm.reset();
                       const modalEl = document.getElementById("customerModal");
                       if (modalEl) {
@@ -5689,15 +6021,209 @@ def invoice_new():
           </div>
         </div>
         """,
-        customers=customers,
-        default_est=default_est,
-        default_pun=default_pun,
-        available_pun=available_pun,
-        products=products,
-        afe_nat=AFE_NAT_MAP,
-        afe_id=AFE_ID_MAP,
-    )
-    return render_template_string(BASE_HTML, title="Factura nueva", db_path=DB_PATH, body=body)
+            customers=customers,
+            default_est=default_est,
+            default_pun=default_pun,
+            available_pun=available_pun,
+            products=products,
+            afe_nat=AFE_NAT_MAP,
+            afe_id=AFE_ID_MAP,
+            nc_motivos=NC_MOTIVO_MAP,
+            rem_motivos=REM_MOTIVO_MAP,
+            rem_resp=REM_RESP_MAP,
+            trans_tipo=TRANS_TIPO_MAP,
+            trans_mod=TRANS_MOD_MAP,
+            resp_flete=RESP_FLETE_MAP,
+            veh_tipos=VEH_TIPO_MAP,
+            doc_impreso_types=DOC_IMPRESO_TYPE_MAP,
+            form=form_values,
+            items=items_form,
+            error=error,
+        )
+        return render_template_string(BASE_HTML, title="Documento nuevo", db_path=DB_PATH, body=body), status
+
+    if request.method == "POST":
+        doc_type = normalize_doc_type(request.form.get("doc_type"))
+        doc_extra_json = None
+        customer_id = int(request.form.get("customer_id") or "0")
+        if doc_type != "4":
+            if not customer_id:
+                return _render_form("Customer_id requerido.", 400)
+            exists = con.execute(
+                "SELECT 1 FROM customers WHERE id=? AND deleted_at IS NULL",
+                (customer_id,),
+            ).fetchone()
+            if not exists:
+                return _render_form("Cliente inválido o eliminado.", 400)
+        if doc_type == "4":
+            # customer_id se usa solo por restricción del modelo actual;
+            # en AFE el receptor real se fuerza a emisor en XML.
+            row = con.execute(
+                "SELECT id FROM customers WHERE deleted_at IS NULL ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+            if row:
+                customer_id = int(row["id"])
+            else:
+                con.execute(
+                    "INSERT INTO customers (name, ruc, created_at) VALUES (?,?,?)",
+                    ("Cliente Demo S.A.", "80012345-6", now_iso()),
+                )
+                customer_id = int(con.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+            vendor = {
+                "iNatVen": (request.form.get("afe_tipo_vendedor") or "").strip(),
+                "iTipIDVen": (request.form.get("afe_tipo_doc") or "").strip(),
+                "documento": _clean_text(request.form.get("afe_nro_doc")),
+                "nombre": _clean_text(request.form.get("afe_nombre")),
+                "direccion": _clean_text(request.form.get("afe_direccion")),
+                "numCasa": _clean_digits(request.form.get("afe_num_casa")),
+                "departamentoVendedor": _clean_digits(request.form.get("afe_departamento")),
+                "distritoVendedor": _clean_digits(request.form.get("afe_distrito")),
+                "ciudadVendedor": _clean_digits(request.form.get("afe_ciudad")),
+            }
+            extra_json = {"documentoAsociado": {"tipoDocumentoAsoc": "3"}}
+            _set_afe_vendor_extra(extra_json, vendor)
+            errors = _validate_doc_extra(doc_type, extra_json)
+            if errors:
+                return _render_form("En Autofactura debes completar los datos del vendedor.\n- " + "\n- ".join(errors), 400)
+            doc_extra_json = json.dumps(extra_json, ensure_ascii=False)
+        elif doc_type in ("5", "6"):
+            assoc_type = (request.form.get("nc_doc_asoc_tipo") or "1").strip()
+            assoc = {"tipoDocumentoAsoc": assoc_type}
+            if assoc_type == "1":
+                assoc["cdcAsociado"] = _clean_digits(request.form.get("nc_cdc_asoc"))
+            elif assoc_type == "2":
+                assoc["timbradoAsoc"] = _clean_digits(request.form.get("nc_timbrado_asoc"))
+                assoc["establecimientoAsoc"] = _clean_digits(request.form.get("nc_est_asoc"))
+                assoc["puntoAsoc"] = _clean_digits(request.form.get("nc_pun_asoc"))
+                assoc["numeroAsoc"] = _clean_digits(request.form.get("nc_num_asoc"))
+                tipo_imp = (request.form.get("nc_tipo_doc_imp") or "").strip()
+                if tipo_imp:
+                    assoc["tipoDocumentoIm"] = tipo_imp
+                fecha_imp = (request.form.get("nc_fecha_doc_imp") or "").strip()
+                if fecha_imp:
+                    assoc["fechaDocIm"] = fecha_imp
+            extra_json = {
+                "documentoAsociado": assoc,
+                "iMotEmi": (request.form.get("nc_motivo") or "").strip(),
+            }
+            errors = _validate_doc_extra(doc_type, extra_json)
+            if errors:
+                return _render_form("Completa los datos de Nota de crédito/débito.\n- " + "\n- ".join(errors), 400)
+            doc_extra_json = json.dumps(extra_json, ensure_ascii=False)
+        elif doc_type == "7":
+            remision = {
+                "motivo": (request.form.get("nre_motivo") or "").strip(),
+                "responsableEmi": (request.form.get("nre_responsable") or "").strip(),
+            }
+            km = (request.form.get("nre_km") or "").strip()
+            if km:
+                remision["kmEstimado"] = km
+            fec = (request.form.get("nre_fecha_factura") or "").strip()
+            if fec:
+                remision["fechaFactura"] = fec
+
+            transporte = {
+                "modalidad": (request.form.get("nre_trans_modalidad") or "").strip(),
+                "tipoResponsable": (request.form.get("nre_trans_resp_flete") or "").strip(),
+                "salida": {
+                    "direccion": _clean_text(request.form.get("nre_sal_direccion")),
+                    "numCasa": _clean_digits(request.form.get("nre_sal_num_casa")),
+                    "departamento": _clean_digits(request.form.get("nre_sal_departamento")),
+                    "distrito": _clean_digits(request.form.get("nre_sal_distrito")),
+                    "ciudad": _clean_digits(request.form.get("nre_sal_ciudad")),
+                    "telefono": _clean_text(request.form.get("nre_sal_telefono")),
+                },
+                "entrega": {
+                    "direccion": _clean_text(request.form.get("nre_ent_direccion")),
+                    "numCasa": _clean_digits(request.form.get("nre_ent_num_casa")),
+                    "departamento": _clean_digits(request.form.get("nre_ent_departamento")),
+                    "distrito": _clean_digits(request.form.get("nre_ent_distrito")),
+                    "ciudad": _clean_digits(request.form.get("nre_ent_ciudad")),
+                    "telefono": _clean_text(request.form.get("nre_ent_telefono")),
+                },
+                "vehiculo": {
+                    "tipo": (request.form.get("nre_veh_tipo") or "").strip(),
+                    "marca": _clean_text(request.form.get("nre_veh_marca")),
+                    "documentoTipo": (request.form.get("nre_veh_doc_tipo") or "").strip(),
+                    "numeroIden": _clean_text(request.form.get("nre_veh_numero")),
+                },
+                "transportista": {
+                    "tipo": (request.form.get("nre_transp_tipo") or "").strip(),
+                    "nombreTr": _clean_text(request.form.get("nre_transp_nombre")),
+                    "numeroTr": _clean_text(request.form.get("nre_transp_numero")),
+                    "tipoDocumentoTr": (request.form.get("nre_transp_tipo_doc") or "").strip(),
+                    "direccionTr": _clean_text(request.form.get("nre_transp_dir")),
+                    "nacionalidad": (request.form.get("nre_transp_nacionalidad") or "").strip(),
+                    "nombreCh": _clean_text(request.form.get("nre_chof_nombre")),
+                    "numeroCh": _clean_text(request.form.get("nre_chof_numero")),
+                    "direccionCh": _clean_text(request.form.get("nre_chof_dir")),
+                },
+            }
+            tipo_trans = (request.form.get("nre_trans_tipo") or "").strip()
+            if tipo_trans:
+                transporte["tipoTransporte"] = tipo_trans
+
+            extra_json = {"remision": remision, "transporte": transporte}
+            errors = _validate_doc_extra(doc_type, extra_json)
+            if errors:
+                return _render_form("Completa los datos de Remisión y Transporte.\n- " + "\n- ".join(errors), 400)
+            doc_extra_json = json.dumps(extra_json, ensure_ascii=False)
+        else:
+            pass
+
+        issued_at = now_iso()
+        est = _zfill_digits(request.form.get("establishment") or default_est, 3)
+        pun = _zfill_digits(request.form.get("point_exp") or default_pun, 3)
+        cur = con.execute(
+            "INSERT INTO invoices (created_at, issued_at, customer_id, status, doc_type, establishment, point_exp, doc_extra_json) VALUES (?,?,?,?,?,?,?,?)",
+            (now_iso(), issued_at, customer_id, "DRAFT", doc_type, est, pun, doc_extra_json),
+        )
+        invoice_id = cur.lastrowid
+
+        def _parse_int(value: Optional[str], default: int) -> int:
+            try:
+                raw = (value or "").strip()
+                return int(raw) if raw else default
+            except Exception:
+                return default
+
+        descs = request.form.getlist("description")
+        qtys = request.form.getlist("qty")
+        prices = request.form.getlist("price_unit")
+        product_ids = request.form.getlist("product_id")
+
+        inserted = 0
+        max_len = max(len(descs), len(qtys), len(prices))
+        for idx in range(max_len):
+            desc = (descs[idx] if idx < len(descs) else "").strip()
+            if not desc:
+                continue
+            qty = _parse_int(qtys[idx] if idx < len(qtys) else None, 1)
+            price_unit = _parse_int(prices[idx] if idx < len(prices) else None, 0)
+            prod_id_raw = (product_ids[idx] if idx < len(product_ids) else "").strip()
+            prod_id = int(prod_id_raw) if prod_id_raw.isdigit() else None
+            line_total = qty * price_unit
+            con.execute(
+                "INSERT INTO invoice_lines (invoice_id, product_id, description, qty, price_unit, line_total) VALUES (?,?,?,?,?,?)",
+                (invoice_id, prod_id, desc, qty, price_unit, line_total),
+            )
+            inserted += 1
+
+        if inserted == 0:
+            desc = "Servicio"
+            qty = 1
+            price_unit = 0
+            line_total = qty * price_unit
+            con.execute(
+                "INSERT INTO invoice_lines (invoice_id, product_id, description, qty, price_unit, line_total) VALUES (?,?,?,?,?,?)",
+                (invoice_id, None, desc, qty, price_unit, line_total),
+            )
+        con.commit()
+        recompute_invoice_totals(invoice_id)
+
+        return redirect(url_for("invoice_detail", invoice_id=invoice_id))
+    return _render_form()
 
 @app.route("/invoice/<int:invoice_id>")
 def invoice_detail(invoice_id: int):

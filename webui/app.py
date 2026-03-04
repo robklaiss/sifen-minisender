@@ -882,7 +882,7 @@ def _next_doc_number(con: sqlite3.Connection, invoice_id: int, est: str = "", pu
 
 def _asuncion_timestamp() -> str:
     # ARAVO FIX: hora PY (America/Asuncion) SIN offset
-    from datetime import datetime
+    from datetime import datetime, timezone
     return datetime.now(tz=SIFEN_TZ).strftime("%Y-%m-%dT%H:%M:%S")
 
 def _make_did_15() -> str:
@@ -1466,14 +1466,15 @@ def _build_invoice_xml_from_template(
     _update_text(root, ".//s:gTimb/s:dDesTiDE", doc_type_label(doc_type), ns)
 
     # ARAVO FIX: SIFEN espera hora PY (America/Asuncion) sin offset
-    from datetime import datetime
+    from datetime import datetime, timezone
     now_py_dt = datetime.now(tz=SIFEN_TZ)
 
     # Si el caller pasa issue_dt (tests/override), usarlo como fecha de emisión.
     if issue_dt is not None:
         dt = issue_dt
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=SIFEN_TZ)
+            # issue_dt naive suele venir en UTC (DB/now_iso). Convertir a PY.
+            dt = dt.replace(tzinfo=timezone.utc).astimezone(SIFEN_TZ)
         else:
             dt = dt.astimezone(SIFEN_TZ)
     else:
@@ -3647,6 +3648,11 @@ def _sifen_preflight_ok() -> tuple[bool, str]:
         return False, f"SIFEN_ERROR: {str(exc)[:300]}"
 
 def _run_sifen_preflight() -> dict:
+    # CERT/KEY from /secrets when running inside Docker
+    import os
+    if os.path.exists("/secrets/cert.pem") and os.path.exists("/secrets/key.pem"):
+        os.environ["CERT"] = "/secrets/cert.pem"
+        os.environ["KEY"] = "/secrets/key.pem"
     ok, detail = _sifen_preflight_ok()
     text = "SIFEN_OK" if ok else "SIFEN_DOWN"
     if detail:

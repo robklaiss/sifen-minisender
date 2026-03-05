@@ -6304,9 +6304,12 @@ def invoice_new():
                 <button class="btn btn-sm btn-outline-primary ms-2" type="button" data-bs-toggle="modal" data-bs-target="#productModal">+ Agregar producto nuevo</button>
               </div>
 
-              <div class="col-12 d-flex gap-2">
-                <button class="btn btn-primary" type="submit">Crear documento</button>
-                <a class="btn btn-outline-secondary" href="{{ url_for('invoices') }}">Cancelar</a>
+              <div class="col-12 d-flex flex-wrap align-items-center gap-3">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" name="confirm_emit" value="YES" id="confirm-emit-new" required>
+                  <label class="form-check-label" for="confirm-emit-new">Confirmo emisión</label>
+                </div>
+                <button class="btn btn-primary" type="submit">Emitir ahora</button>
               </div>
             </form>
             <div class="text-muted small mt-3">
@@ -7062,6 +7065,7 @@ def invoice_detail(invoice_id: int):
     t_trn = transport.get("transportista") or {}
     afe_vendor = _afe_vendor_from_extra(extra_parsed) if doc_type == "4" else {}
     afe_form = _afe_vendor_form_values(afe_vendor) if doc_type == "4" else {}
+    ui_debug = (os.getenv("SIFEN_UI_DEBUG") or "").strip() == "1"
 
     body = render_template_string(
         """
@@ -7129,342 +7133,6 @@ def invoice_detail(invoice_id: int):
                   Último código: <span class="mono">{{inv.last_sifen_code or "—"}}</span><br>
                   Último mensaje: {{inv.last_sifen_msg or "—"}}
                 </div>
-                <form method="post" action="{{ url_for('invoice_resync', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
-                  <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
-                    <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
-                    <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
-                  </select>
-                  <button class="btn btn-sm btn-outline-primary" type="submit">Re-sincronizar con SIFEN</button>
-                </form>
-                <form method="post" action="{{ url_for('invoice_consult_cdc', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
-                  <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
-                    <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
-                    <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
-                  </select>
-                  <button class="btn btn-sm btn-outline-primary" type="submit">Consultar DE (CDC)</button>
-                </form>
-                <form method="post" action="{{ url_for('invoice_refresh_soap', invoice_id=inv.id) }}" class="mt-2">
-                  <button class="btn btn-sm btn-outline-secondary" type="submit">Actualizar desde último SOAP</button>
-                </form>
-              
-                <hr>
-                <h6>Emisión integrada</h6>
-                <div class="small text-muted mb-2">
-                  Email cliente: <span class="mono">{% if doc_type == "4" %}—{% else %}{{ inv.customer_email or "—" }}{% endif %}</span>
-                </div>
-                <div class="small text-muted mb-2">
-                  Tipo: <b>{{ doc_type_label(inv.doc_type) }}</b> — si no es Factura, configurá la plantilla específica en /settings.
-                </div>
-                <form method="post" action="{{ url_for('invoice_set_extra', invoice_id=inv.id) }}" class="mb-2">
-                  <label class="form-label small text-muted">doc_extra_json (pegar JSON de ejemplo si aplica)</label>
-                  <textarea class="form-control form-control-sm mono" name="doc_extra_json" rows="8" placeholder="{}">{{ extra_prefill or "" }}</textarea>
-                  <button class="btn btn-sm btn-outline-secondary mt-2" type="submit">Guardar JSON extra</button>
-                </form>
-                {% if doc_type == "4" %}
-                <div class="card mt-3">
-                  <div class="card-body">
-                    <h6>Datos del vendedor (AFE)</h6>
-                    <form method="post" action="{{ url_for('invoice_set_afe_vendedor', invoice_id=inv.id) }}">
-                      <div class="row g-2">
-                        <div class="col-md-4">
-                          <label class="form-label small">Tipo vendedor</label>
-                          <select class="form-select form-select-sm" name="afe_tipo_vendedor" required>
-                            {% for code, label in afe_nat.items() %}
-                              <option value="{{code}}" {% if afe_form.tipo_vendedor==code %}selected{% endif %}>{{label}}</option>
-                            {% endfor %}
-                          </select>
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Tipo doc. identidad</label>
-                          <select class="form-select form-select-sm" name="afe_tipo_doc" required>
-                            {% for code, label in afe_id.items() %}
-                              <option value="{{code}}" {% if afe_form.tipo_doc==code %}selected{% endif %}>{{label}}</option>
-                            {% endfor %}
-                          </select>
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Nro doc. identidad</label>
-                          <input class="form-control form-control-sm" name="afe_nro_doc" value="{{ afe_form.nro_doc }}" required>
-                        </div>
-                        <div class="col-md-6">
-                          <label class="form-label small">Nombre / Razón social</label>
-                          <input class="form-control form-control-sm" name="afe_nombre" value="{{ afe_form.nombre }}" required>
-                        </div>
-                        <div class="col-md-6">
-                          <label class="form-label small">Dirección</label>
-                          <input class="form-control form-control-sm" name="afe_direccion" value="{{ afe_form.direccion }}" required>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">N° casa</label>
-                          <input class="form-control form-control-sm mono" name="afe_num_casa" value="{{ afe_form.num_casa or '0' }}" required>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Departamento (código)</label>
-                          <input class="form-control form-control-sm mono" name="afe_departamento" value="{{ afe_form.departamento }}" required>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Distrito (código)</label>
-                          <input class="form-control form-control-sm mono" name="afe_distrito" value="{{ afe_form.distrito }}">
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Ciudad (código)</label>
-                          <input class="form-control form-control-sm mono" name="afe_ciudad" value="{{ afe_form.ciudad }}" required>
-                        </div>
-                      </div>
-                      <button class="btn btn-sm btn-outline-primary mt-2" type="submit">Guardar vendedor AFE</button>
-                    </form>
-                  </div>
-                </div>
-                {% endif %}
-                {% if inv.doc_type == "7" %}
-                <div class="card mt-3">
-                  <div class="card-body">
-                    <h6>Transporte (Remisión)</h6>
-                    <form method="post" action="{{ url_for('invoice_set_transporte', invoice_id=inv.id) }}">
-                      <div class="row g-2">
-                        <div class="col-md-4">
-                          <label class="form-label small">Tipo transporte (iTipTrans)</label>
-                          <select class="form-select form-select-sm" name="tr_tipo" required>
-                            {% for k,v in trans_tipo.items() %}
-                              <option value="{{k}}" {% if transport.get('tipoTransporte')|string == k %}selected{% endif %}>{{k}} - {{v}}</option>
-                            {% endfor %}
-                          </select>
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Modalidad (iModTrans)</label>
-                          <select class="form-select form-select-sm" name="tr_modalidad" required>
-                            {% for k,v in trans_mod.items() %}
-                              <option value="{{k}}" {% if transport.get('modalidad')|string == k %}selected{% endif %}>{{k}} - {{v}}</option>
-                            {% endfor %}
-                          </select>
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Responsable flete (iRespFlete)</label>
-                          <select class="form-select form-select-sm" name="tr_resp" required>
-                            {% for k,v in resp_flete.items() %}
-                              <option value="{{k}}" {% if transport.get('tipoResponsable')|string == k %}selected{% endif %}>{{k}} - {{v}}</option>
-                            {% endfor %}
-                          </select>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Inicio traslado</label>
-                          <input class="form-control form-control-sm" name="tr_ini" value="{{ transport.get('iniFechaEstimadaTrans','') }}">
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Fin traslado</label>
-                          <input class="form-control form-control-sm" name="tr_fin" value="{{ transport.get('finFechaEstimadaTrans','') }}">
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Cond. negociación</label>
-                          <input class="form-control form-control-sm" name="tr_cond" value="{{ transport.get('condNeg','') }}">
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Nro. manifiesto</label>
-                          <input class="form-control form-control-sm" name="tr_manif" value="{{ transport.get('numManif','') }}">
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Despacho import.</label>
-                          <input class="form-control form-control-sm" name="tr_desp" value="{{ transport.get('despachoImp','') }}">
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">País destino</label>
-                          <input class="form-control form-control-sm" name="tr_pais" value="{{ transport.get('paisDest','') }}">
-                        </div>
-                        <div class="col-md-6">
-                          <label class="form-label small">Desc país destino</label>
-                          <input class="form-control form-control-sm" name="tr_pais_desc" value="{{ transport.get('paisDestDesc','') }}">
-                        </div>
-                      </div>
-
-                      <hr>
-                      <h6 class="mt-2">Salida</h6>
-                      <div class="row g-2">
-                        <div class="col-md-6">
-                          <label class="form-label small">Dirección</label>
-                          <input class="form-control form-control-sm" name="sal_dir" value="{{ t_sal.get('direccion','') }}" required>
-                        </div>
-                        <div class="col-md-2">
-                          <label class="form-label small">Nro casa</label>
-                          <input class="form-control form-control-sm" name="sal_num" value="{{ t_sal.get('numCasa','') }}" required>
-                        </div>
-                        <div class="col-md-2">
-                          <label class="form-label small">Dep</label>
-                          <input class="form-control form-control-sm" name="sal_dep" value="{{ t_sal.get('departamento','') }}" required>
-                        </div>
-                        <div class="col-md-2">
-                          <label class="form-label small">Dist</label>
-                          <input class="form-control form-control-sm" name="sal_dist" value="{{ t_sal.get('distrito','') }}">
-                        </div>
-                        <div class="col-md-2">
-                          <label class="form-label small">Ciudad</label>
-                          <input class="form-control form-control-sm" name="sal_ciu" value="{{ t_sal.get('ciudad','') }}" required>
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Teléfono</label>
-                          <input class="form-control form-control-sm" name="sal_tel" value="{{ t_sal.get('telefono','') }}">
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Comp. 1</label>
-                          <input class="form-control form-control-sm" name="sal_comp1" value="{{ t_sal.get('comp1','') }}">
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Comp. 2</label>
-                          <input class="form-control form-control-sm" name="sal_comp2" value="{{ t_sal.get('comp2','') }}">
-                        </div>
-                      </div>
-
-                      <hr>
-                      <h6 class="mt-2">Entrega</h6>
-                      <div class="row g-2">
-                        <div class="col-md-6">
-                          <label class="form-label small">Dirección</label>
-                          <input class="form-control form-control-sm" name="ent_dir" value="{{ t_ent.get('direccion','') }}" required>
-                        </div>
-                        <div class="col-md-2">
-                          <label class="form-label small">Nro casa</label>
-                          <input class="form-control form-control-sm" name="ent_num" value="{{ t_ent.get('numCasa','') }}" required>
-                        </div>
-                        <div class="col-md-2">
-                          <label class="form-label small">Dep</label>
-                          <input class="form-control form-control-sm" name="ent_dep" value="{{ t_ent.get('departamento','') }}" required>
-                        </div>
-                        <div class="col-md-2">
-                          <label class="form-label small">Dist</label>
-                          <input class="form-control form-control-sm" name="ent_dist" value="{{ t_ent.get('distrito','') }}">
-                        </div>
-                        <div class="col-md-2">
-                          <label class="form-label small">Ciudad</label>
-                          <input class="form-control form-control-sm" name="ent_ciu" value="{{ t_ent.get('ciudad','') }}" required>
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Teléfono</label>
-                          <input class="form-control form-control-sm" name="ent_tel" value="{{ t_ent.get('telefono','') }}">
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Comp. 1</label>
-                          <input class="form-control form-control-sm" name="ent_comp1" value="{{ t_ent.get('comp1','') }}">
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">Comp. 2</label>
-                          <input class="form-control form-control-sm" name="ent_comp2" value="{{ t_ent.get('comp2','') }}">
-                        </div>
-                      </div>
-
-                      <hr>
-                      <h6 class="mt-2">Vehículo</h6>
-                      <div class="row g-2">
-                        <div class="col-md-3">
-                          <label class="form-label small">Tipo</label>
-                          <input class="form-control form-control-sm" name="veh_tipo" value="{{ t_veh.get('tipo','') }}" required>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Marca</label>
-                          <input class="form-control form-control-sm" name="veh_marca" value="{{ t_veh.get('marca','') }}" required>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Tipo doc vehículo</label>
-                          <select class="form-select form-select-sm" name="veh_doc_tipo" required>
-                            <option value="1" {% if t_veh.get('documentoTipo')|string == "1" %}selected{% endif %}>1 - Identificación</option>
-                            <option value="2" {% if t_veh.get('documentoTipo')|string == "2" %}selected{% endif %}>2 - Matrícula</option>
-                          </select>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Nro id/matrícula</label>
-                          <input class="form-control form-control-sm" name="veh_num" value="{{ t_veh.get('numeroIden', t_veh.get('numeroMat','')) }}" required>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Datos adicionales</label>
-                          <input class="form-control form-control-sm" name="veh_adic" value="{{ t_veh.get('adic','') }}">
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Nro vuelo</label>
-                          <input class="form-control form-control-sm" name="veh_vuelo" value="{{ t_veh.get('numeroVuelo','') }}">
-                        </div>
-                      </div>
-
-                      <hr>
-                      <h6 class="mt-2">Transportista</h6>
-                      <div class="row g-2">
-                        <div class="col-md-3">
-                          <label class="form-label small">Naturaleza</label>
-                          <select class="form-select form-select-sm" name="trn_nat" required>
-                            <option value="1" {% if t_trn.get('tipo')|string == "1" %}selected{% endif %}>1 - Contribuyente</option>
-                            <option value="2" {% if t_trn.get('tipo')|string == "2" %}selected{% endif %}>2 - No contribuyente</option>
-                          </select>
-                        </div>
-                        <div class="col-md-5">
-                          <label class="form-label small">Nombre/Razón social</label>
-                          <input class="form-control form-control-sm" name="trn_nom" value="{{ t_trn.get('nombreTr','') }}" required>
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label small">RUC / Doc ID</label>
-                          <input class="form-control form-control-sm" name="trn_num" value="{{ t_trn.get('numeroTr','') }}" required>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Tipo doc (no contrib.)</label>
-                          <select class="form-select form-select-sm" name="trn_doc_tipo">
-                            <option value="">—</option>
-                            <option value="1" {% if t_trn.get('tipoDocumentoTr')|string == "1" %}selected{% endif %}>1 - Cédula</option>
-                            <option value="2" {% if t_trn.get('tipoDocumentoTr')|string == "2" %}selected{% endif %}>2 - Pasaporte</option>
-                            <option value="3" {% if t_trn.get('tipoDocumentoTr')|string == "3" %}selected{% endif %}>3 - Cédula extranjera</option>
-                            <option value="4" {% if t_trn.get('tipoDocumentoTr')|string == "4" %}selected{% endif %}>4 - Carnet residencia</option>
-                          </select>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Nacionalidad</label>
-                          <input class="form-control form-control-sm" name="trn_nac" value="{{ t_trn.get('nacionalidad','') }}">
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Chofer doc</label>
-                          <input class="form-control form-control-sm" name="trn_ch_doc" value="{{ t_trn.get('numeroCh','') }}" required>
-                        </div>
-                        <div class="col-md-3">
-                          <label class="form-label small">Chofer nombre</label>
-                          <input class="form-control form-control-sm" name="trn_ch_nom" value="{{ t_trn.get('nombreCh','') }}" required>
-                        </div>
-                        <div class="col-md-6">
-                          <label class="form-label small">Domicilio fiscal</label>
-                          <input class="form-control form-control-sm" name="trn_dom" value="{{ t_trn.get('direccionTr','') }}">
-                        </div>
-                        <div class="col-md-6">
-                          <label class="form-label small">Dirección chofer</label>
-                          <input class="form-control form-control-sm" name="trn_dir_ch" value="{{ t_trn.get('direccionCh','') }}">
-                        </div>
-                      </div>
-                      <button class="btn btn-sm btn-outline-primary mt-3" type="submit">Guardar transporte</button>
-                    </form>
-                    <div class="small text-muted mt-2">
-                      Nota: departamento/ciudad se completan con la planilla geográfica. Distrito es opcional.
-                    </div>
-                  </div>
-                </div>
-                {% endif %}
-                <form method="post" action="{{ url_for('invoice_emit', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center">
-                  <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
-                    <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
-                    <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
-                  </select>
-                  <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="checkbox" name="confirm_emit" value="YES" id="confirm-emit-{{inv.id}}">
-                    <label class="form-check-label small" for="confirm-emit-{{inv.id}}">Confirmo emisión PROD</label>
-                  </div>
-                  <button class="btn btn-sm btn-success" type="submit">Emitir ahora</button>
-                </form>
-                <form method="post" action="{{ url_for('invoice_enqueue', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
-                  <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
-                    <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
-                    <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
-                  </select>
-                  <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="checkbox" name="confirm_emit" value="YES" id="confirm-queue-{{inv.id}}">
-                    <label class="form-check-label small" for="confirm-queue-{{inv.id}}">Confirmo emisión PROD</label>
-                  </div>
-                  <button class="btn btn-sm btn-outline-success" type="submit">Encolar</button>
-                </form>
-                <div class="text-muted small mt-2">
-                  Requiere: `SIFEN_SIGN_P12_PATH`, `SIFEN_SIGN_P12_PASSWORD`, `SIFEN_CSC` y SMTP (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`).
-                </div>
-
                 <hr>
                 <h6>Eventos SIFEN (Cancelación / Inutilización)</h6>
                 <div class="small text-muted mb-1">
@@ -7622,50 +7290,403 @@ def invoice_detail(invoice_id: int):
                   })();
                 </script>
 
+                {% if ui_debug %}
                 <hr>
-                <h6>Integración minisender (MVP)</h6>
-                <form method="post" action="{{ url_for('invoice_set_xml', invoice_id=inv.id) }}" class="mb-2">
-                  <label class="form-label small text-muted">source_xml_path (XML firmado)</label>
-                  <input class="form-control form-control-sm mono" name="source_xml_path" value="{{ inv.source_xml_path or '' }}" placeholder="/path/a/signed_rde.xml">
-                  <button class="btn btn-sm btn-outline-secondary mt-2" type="submit">Guardar XML path</button>
-                </form>
-                {% if inv.source_xml_path %}
-                  <div class="text-muted small mb-2">source_xml_path: <span class="mono">{{ inv.source_xml_path }}</span></div>
-                {% endif %}
+                <div class="accordion" id="invoice-advanced-{{ inv.id }}">
+                  <div class="accordion-item">
+                    <h2 class="accordion-header" id="invoice-advanced-heading-{{ inv.id }}">
+                      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#invoice-advanced-body-{{ inv.id }}" aria-expanded="false" aria-controls="invoice-advanced-body-{{ inv.id }}">
+                        Avanzado
+                      </button>
+                    </h2>
+                    <div id="invoice-advanced-body-{{ inv.id }}" class="accordion-collapse collapse" aria-labelledby="invoice-advanced-heading-{{ inv.id }}">
+                      <div class="accordion-body">
+                        <h6>Acciones SIFEN</h6>
+                        <form method="post" action="{{ url_for('invoice_resync', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
+                          <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
+                            <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
+                            <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
+                          </select>
+                          <button class="btn btn-sm btn-outline-primary" type="submit">Re-sincronizar con SIFEN</button>
+                        </form>
+                        <form method="post" action="{{ url_for('invoice_consult_cdc', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
+                          <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
+                            <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
+                            <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
+                          </select>
+                          <button class="btn btn-sm btn-outline-primary" type="submit">Consultar DE (CDC)</button>
+                        </form>
+                        <form method="post" action="{{ url_for('invoice_refresh_soap', invoice_id=inv.id) }}" class="mt-2">
+                          <button class="btn btn-sm btn-outline-secondary" type="submit">Actualizar desde último SOAP</button>
+                        </form>
 
-                <div class="d-flex gap-2 flex-wrap">
-                  <form method="post" action="{{ url_for('invoice_send_test', invoice_id=inv.id) }}">
-                    <button class="btn btn-sm btn-primary" type="submit">Enviar a SIFEN (TEST)</button>
-                  </form>
-                  <form method="post" action="{{ url_for('invoice_consult_test', invoice_id=inv.id) }}">
-                    <button class="btn btn-sm btn-outline-primary" type="submit">Consultar estado (TEST)</button>
-                  </form>
-                </div>
-                <form method="post" action="{{ url_for('invoice_consult_cdc', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
-                  <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
-                    <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
-                    <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
-                  </select>
-                  <button class="btn btn-sm btn-outline-primary" type="submit">Consultar DE (CDC)</button>
-                </form>
-                <div class="text-muted small mt-1">
-                  Usa el CDC del XML firmado (source_xml_path).
-                </div>
-                <div class="mt-2">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('invoice_preview_pdf', invoice_id=inv.id) }}" target="_blank">Ver PDF (preview)</a>
-                </div>
+                        <hr class="my-3">
+                        <h6>Emisión integrada</h6>
+                        <div class="small text-muted mb-2">
+                          Email cliente: <span class="mono">{% if doc_type == "4" %}—{% else %}{{ inv.customer_email or "—" }}{% endif %}</span>
+                        </div>
+                        <div class="small text-muted mb-2">
+                          Tipo: <b>{{ doc_type_label(inv.doc_type) }}</b> — si no es Factura, configurá la plantilla específica en /settings.
+                        </div>
+                        <form method="post" action="{{ url_for('invoice_set_extra', invoice_id=inv.id) }}" class="mb-2">
+                          <label class="form-label small text-muted">doc_extra_json (pegar JSON de ejemplo si aplica)</label>
+                          <textarea class="form-control form-control-sm mono" name="doc_extra_json" rows="8" placeholder="{}">{{ extra_prefill or "" }}</textarea>
+                          <button class="btn btn-sm btn-outline-secondary mt-2" type="submit">Guardar JSON extra</button>
+                        </form>
+                        {% if doc_type == "4" %}
+                        <div class="card mt-3">
+                          <div class="card-body">
+                            <h6>Datos del vendedor (AFE)</h6>
+                            <form method="post" action="{{ url_for('invoice_set_afe_vendedor', invoice_id=inv.id) }}">
+                              <div class="row g-2">
+                                <div class="col-md-4">
+                                  <label class="form-label small">Tipo vendedor</label>
+                                  <select class="form-select form-select-sm" name="afe_tipo_vendedor" required>
+                                    {% for code, label in afe_nat.items() %}
+                                      <option value="{{code}}" {% if afe_form.tipo_vendedor==code %}selected{% endif %}>{{label}}</option>
+                                    {% endfor %}
+                                  </select>
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Tipo doc. identidad</label>
+                                  <select class="form-select form-select-sm" name="afe_tipo_doc" required>
+                                    {% for code, label in afe_id.items() %}
+                                      <option value="{{code}}" {% if afe_form.tipo_doc==code %}selected{% endif %}>{{label}}</option>
+                                    {% endfor %}
+                                  </select>
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Nro doc. identidad</label>
+                                  <input class="form-control form-control-sm" name="afe_nro_doc" value="{{ afe_form.nro_doc }}" required>
+                                </div>
+                                <div class="col-md-6">
+                                  <label class="form-label small">Nombre / Razón social</label>
+                                  <input class="form-control form-control-sm" name="afe_nombre" value="{{ afe_form.nombre }}" required>
+                                </div>
+                                <div class="col-md-6">
+                                  <label class="form-label small">Dirección</label>
+                                  <input class="form-control form-control-sm" name="afe_direccion" value="{{ afe_form.direccion }}" required>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">N° casa</label>
+                                  <input class="form-control form-control-sm mono" name="afe_num_casa" value="{{ afe_form.num_casa or '0' }}" required>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Departamento (código)</label>
+                                  <input class="form-control form-control-sm mono" name="afe_departamento" value="{{ afe_form.departamento }}" required>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Distrito (código)</label>
+                                  <input class="form-control form-control-sm mono" name="afe_distrito" value="{{ afe_form.distrito }}">
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Ciudad (código)</label>
+                                  <input class="form-control form-control-sm mono" name="afe_ciudad" value="{{ afe_form.ciudad }}" required>
+                                </div>
+                              </div>
+                              <button class="btn btn-sm btn-outline-primary mt-2" type="submit">Guardar vendedor AFE</button>
+                            </form>
+                          </div>
+                        </div>
+                        {% endif %}
+                        {% if inv.doc_type == "7" %}
+                        <div class="card mt-3">
+                          <div class="card-body">
+                            <h6>Transporte (Remisión)</h6>
+                            <form method="post" action="{{ url_for('invoice_set_transporte', invoice_id=inv.id) }}">
+                              <div class="row g-2">
+                                <div class="col-md-4">
+                                  <label class="form-label small">Tipo transporte (iTipTrans)</label>
+                                  <select class="form-select form-select-sm" name="tr_tipo" required>
+                                    {% for k,v in trans_tipo.items() %}
+                                      <option value="{{k}}" {% if transport.get('tipoTransporte')|string == k %}selected{% endif %}>{{k}} - {{v}}</option>
+                                    {% endfor %}
+                                  </select>
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Modalidad (iModTrans)</label>
+                                  <select class="form-select form-select-sm" name="tr_modalidad" required>
+                                    {% for k,v in trans_mod.items() %}
+                                      <option value="{{k}}" {% if transport.get('modalidad')|string == k %}selected{% endif %}>{{k}} - {{v}}</option>
+                                    {% endfor %}
+                                  </select>
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Responsable flete (iRespFlete)</label>
+                                  <select class="form-select form-select-sm" name="tr_resp" required>
+                                    {% for k,v in resp_flete.items() %}
+                                      <option value="{{k}}" {% if transport.get('tipoResponsable')|string == k %}selected{% endif %}>{{k}} - {{v}}</option>
+                                    {% endfor %}
+                                  </select>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Inicio traslado</label>
+                                  <input class="form-control form-control-sm" name="tr_ini" value="{{ transport.get('iniFechaEstimadaTrans','') }}">
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Fin traslado</label>
+                                  <input class="form-control form-control-sm" name="tr_fin" value="{{ transport.get('finFechaEstimadaTrans','') }}">
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Cond. negociación</label>
+                                  <input class="form-control form-control-sm" name="tr_cond" value="{{ transport.get('condNeg','') }}">
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Nro. manifiesto</label>
+                                  <input class="form-control form-control-sm" name="tr_manif" value="{{ transport.get('numManif','') }}">
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Despacho import.</label>
+                                  <input class="form-control form-control-sm" name="tr_desp" value="{{ transport.get('despachoImp','') }}">
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">País destino</label>
+                                  <input class="form-control form-control-sm" name="tr_pais" value="{{ transport.get('paisDest','') }}">
+                                </div>
+                                <div class="col-md-6">
+                                  <label class="form-label small">Desc país destino</label>
+                                  <input class="form-control form-control-sm" name="tr_pais_desc" value="{{ transport.get('paisDestDesc','') }}">
+                                </div>
+                              </div>
 
-                <div class="text-muted small mt-2">
-                  last_artifacts_dir: <span class="mono">{{ inv.last_artifacts_dir or "—" }}</span>
+                              <hr>
+                              <h6 class="mt-2">Salida</h6>
+                              <div class="row g-2">
+                                <div class="col-md-6">
+                                  <label class="form-label small">Dirección</label>
+                                  <input class="form-control form-control-sm" name="sal_dir" value="{{ t_sal.get('direccion','') }}" required>
+                                </div>
+                                <div class="col-md-2">
+                                  <label class="form-label small">Nro casa</label>
+                                  <input class="form-control form-control-sm" name="sal_num" value="{{ t_sal.get('numCasa','') }}" required>
+                                </div>
+                                <div class="col-md-2">
+                                  <label class="form-label small">Dep</label>
+                                  <input class="form-control form-control-sm" name="sal_dep" value="{{ t_sal.get('departamento','') }}" required>
+                                </div>
+                                <div class="col-md-2">
+                                  <label class="form-label small">Dist</label>
+                                  <input class="form-control form-control-sm" name="sal_dist" value="{{ t_sal.get('distrito','') }}">
+                                </div>
+                                <div class="col-md-2">
+                                  <label class="form-label small">Ciudad</label>
+                                  <input class="form-control form-control-sm" name="sal_ciu" value="{{ t_sal.get('ciudad','') }}" required>
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Teléfono</label>
+                                  <input class="form-control form-control-sm" name="sal_tel" value="{{ t_sal.get('telefono','') }}">
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Comp. 1</label>
+                                  <input class="form-control form-control-sm" name="sal_comp1" value="{{ t_sal.get('comp1','') }}">
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Comp. 2</label>
+                                  <input class="form-control form-control-sm" name="sal_comp2" value="{{ t_sal.get('comp2','') }}">
+                                </div>
+                              </div>
+
+                              <hr>
+                              <h6 class="mt-2">Entrega</h6>
+                              <div class="row g-2">
+                                <div class="col-md-6">
+                                  <label class="form-label small">Dirección</label>
+                                  <input class="form-control form-control-sm" name="ent_dir" value="{{ t_ent.get('direccion','') }}" required>
+                                </div>
+                                <div class="col-md-2">
+                                  <label class="form-label small">Nro casa</label>
+                                  <input class="form-control form-control-sm" name="ent_num" value="{{ t_ent.get('numCasa','') }}" required>
+                                </div>
+                                <div class="col-md-2">
+                                  <label class="form-label small">Dep</label>
+                                  <input class="form-control form-control-sm" name="ent_dep" value="{{ t_ent.get('departamento','') }}" required>
+                                </div>
+                                <div class="col-md-2">
+                                  <label class="form-label small">Dist</label>
+                                  <input class="form-control form-control-sm" name="ent_dist" value="{{ t_ent.get('distrito','') }}">
+                                </div>
+                                <div class="col-md-2">
+                                  <label class="form-label small">Ciudad</label>
+                                  <input class="form-control form-control-sm" name="ent_ciu" value="{{ t_ent.get('ciudad','') }}" required>
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Teléfono</label>
+                                  <input class="form-control form-control-sm" name="ent_tel" value="{{ t_ent.get('telefono','') }}">
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Comp. 1</label>
+                                  <input class="form-control form-control-sm" name="ent_comp1" value="{{ t_ent.get('comp1','') }}">
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">Comp. 2</label>
+                                  <input class="form-control form-control-sm" name="ent_comp2" value="{{ t_ent.get('comp2','') }}">
+                                </div>
+                              </div>
+
+                              <hr>
+                              <h6 class="mt-2">Vehículo</h6>
+                              <div class="row g-2">
+                                <div class="col-md-3">
+                                  <label class="form-label small">Tipo</label>
+                                  <input class="form-control form-control-sm" name="veh_tipo" value="{{ t_veh.get('tipo','') }}" required>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Marca</label>
+                                  <input class="form-control form-control-sm" name="veh_marca" value="{{ t_veh.get('marca','') }}" required>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Tipo doc vehículo</label>
+                                  <select class="form-select form-select-sm" name="veh_doc_tipo" required>
+                                    <option value="1" {% if t_veh.get('documentoTipo')|string == "1" %}selected{% endif %}>1 - Identificación</option>
+                                    <option value="2" {% if t_veh.get('documentoTipo')|string == "2" %}selected{% endif %}>2 - Matrícula</option>
+                                  </select>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Nro id/matrícula</label>
+                                  <input class="form-control form-control-sm" name="veh_num" value="{{ t_veh.get('numeroIden', t_veh.get('numeroMat','')) }}" required>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Datos adicionales</label>
+                                  <input class="form-control form-control-sm" name="veh_adic" value="{{ t_veh.get('adic','') }}">
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Nro vuelo</label>
+                                  <input class="form-control form-control-sm" name="veh_vuelo" value="{{ t_veh.get('numeroVuelo','') }}">
+                                </div>
+                              </div>
+
+                              <hr>
+                              <h6 class="mt-2">Transportista</h6>
+                              <div class="row g-2">
+                                <div class="col-md-3">
+                                  <label class="form-label small">Naturaleza</label>
+                                  <select class="form-select form-select-sm" name="trn_nat" required>
+                                    <option value="1" {% if t_trn.get('tipo')|string == "1" %}selected{% endif %}>1 - Contribuyente</option>
+                                    <option value="2" {% if t_trn.get('tipo')|string == "2" %}selected{% endif %}>2 - No contribuyente</option>
+                                  </select>
+                                </div>
+                                <div class="col-md-5">
+                                  <label class="form-label small">Nombre/Razón social</label>
+                                  <input class="form-control form-control-sm" name="trn_nom" value="{{ t_trn.get('nombreTr','') }}" required>
+                                </div>
+                                <div class="col-md-4">
+                                  <label class="form-label small">RUC / Doc ID</label>
+                                  <input class="form-control form-control-sm" name="trn_num" value="{{ t_trn.get('numeroTr','') }}" required>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Tipo doc (no contrib.)</label>
+                                  <select class="form-select form-select-sm" name="trn_doc_tipo">
+                                    <option value="">—</option>
+                                    <option value="1" {% if t_trn.get('tipoDocumentoTr')|string == "1" %}selected{% endif %}>1 - Cédula</option>
+                                    <option value="2" {% if t_trn.get('tipoDocumentoTr')|string == "2" %}selected{% endif %}>2 - Pasaporte</option>
+                                    <option value="3" {% if t_trn.get('tipoDocumentoTr')|string == "3" %}selected{% endif %}>3 - Cédula extranjera</option>
+                                    <option value="4" {% if t_trn.get('tipoDocumentoTr')|string == "4" %}selected{% endif %}>4 - Carnet residencia</option>
+                                  </select>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Nacionalidad</label>
+                                  <input class="form-control form-control-sm" name="trn_nac" value="{{ t_trn.get('nacionalidad','') }}">
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Chofer doc</label>
+                                  <input class="form-control form-control-sm" name="trn_ch_doc" value="{{ t_trn.get('numeroCh','') }}" required>
+                                </div>
+                                <div class="col-md-3">
+                                  <label class="form-label small">Chofer nombre</label>
+                                  <input class="form-control form-control-sm" name="trn_ch_nom" value="{{ t_trn.get('nombreCh','') }}" required>
+                                </div>
+                                <div class="col-md-6">
+                                  <label class="form-label small">Domicilio fiscal</label>
+                                  <input class="form-control form-control-sm" name="trn_dom" value="{{ t_trn.get('direccionTr','') }}">
+                                </div>
+                                <div class="col-md-6">
+                                  <label class="form-label small">Dirección chofer</label>
+                                  <input class="form-control form-control-sm" name="trn_dir_ch" value="{{ t_trn.get('direccionCh','') }}">
+                                </div>
+                              </div>
+                              <button class="btn btn-sm btn-outline-primary mt-3" type="submit">Guardar transporte</button>
+                            </form>
+                            <div class="small text-muted mt-2">
+                              Nota: departamento/ciudad se completan con la planilla geográfica. Distrito es opcional.
+                            </div>
+                          </div>
+                        </div>
+                        {% endif %}
+                        <form method="post" action="{{ url_for('invoice_emit', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center">
+                          <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
+                            <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
+                            <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
+                          </select>
+                          <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="confirm_emit" value="YES" id="confirm-emit-{{inv.id}}">
+                            <label class="form-check-label small" for="confirm-emit-{{inv.id}}">Confirmo emisión PROD</label>
+                          </div>
+                          <button class="btn btn-sm btn-success" type="submit">Emitir ahora</button>
+                        </form>
+                        <form method="post" action="{{ url_for('invoice_enqueue', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
+                          <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
+                            <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
+                            <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
+                          </select>
+                          <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="confirm_emit" value="YES" id="confirm-queue-{{inv.id}}">
+                            <label class="form-check-label small" for="confirm-queue-{{inv.id}}">Confirmo emisión PROD</label>
+                          </div>
+                          <button class="btn btn-sm btn-outline-success" type="submit">Encolar</button>
+                        </form>
+                        <div class="text-muted small mt-2">
+                          Requiere: `SIFEN_SIGN_P12_PATH`, `SIFEN_SIGN_P12_PASSWORD`, `SIFEN_CSC` y SMTP (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`).
+                        </div>
+
+                        <hr class="my-3">
+                        <h6>Integración minisender (MVP)</h6>
+                        <form method="post" action="{{ url_for('invoice_set_xml', invoice_id=inv.id) }}" class="mb-2">
+                          <label class="form-label small text-muted">source_xml_path (XML firmado)</label>
+                          <input class="form-control form-control-sm mono" name="source_xml_path" value="{{ inv.source_xml_path or '' }}" placeholder="/path/a/signed_rde.xml">
+                          <button class="btn btn-sm btn-outline-secondary mt-2" type="submit">Guardar XML path</button>
+                        </form>
+                        {% if inv.source_xml_path %}
+                          <div class="text-muted small mb-2">source_xml_path: <span class="mono">{{ inv.source_xml_path }}</span></div>
+                        {% endif %}
+
+                        <div class="d-flex gap-2 flex-wrap">
+                          <form method="post" action="{{ url_for('invoice_send_test', invoice_id=inv.id) }}">
+                            <button class="btn btn-sm btn-primary" type="submit">Enviar a SIFEN (TEST)</button>
+                          </form>
+                          <form method="post" action="{{ url_for('invoice_consult_test', invoice_id=inv.id) }}">
+                            <button class="btn btn-sm btn-outline-primary" type="submit">Consultar estado (TEST)</button>
+                          </form>
+                        </div>
+                        <form method="post" action="{{ url_for('invoice_consult_cdc', invoice_id=inv.id) }}" class="d-flex gap-2 flex-wrap align-items-center mt-2">
+                          <select class="form-select form-select-sm" name="env" style="max-width: 140px;">
+                            <option value="prod" {% if default_env=="prod" %}selected{% endif %}>PROD</option>
+                            <option value="test" {% if default_env=="test" %}selected{% endif %}>TEST</option>
+                          </select>
+                          <button class="btn btn-sm btn-outline-primary" type="submit">Consultar DE (CDC)</button>
+                        </form>
+                        <div class="text-muted small mt-1">
+                          Usa el CDC del XML firmado (source_xml_path).
+                        </div>
+                        <div class="mt-2">
+                          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('invoice_preview_pdf', invoice_id=inv.id) }}" target="_blank">Ver PDF (preview)</a>
+                        </div>
+
+                        <div class="text-muted small mt-2">
+                          last_artifacts_dir: <span class="mono">{{ inv.last_artifacts_dir or "—" }}</span>
+                        </div>
+                        <div class="text-muted small mt-2">
+                          pdf_path: <span class="mono">{{ inv.pdf_path or "—" }}</span><br>
+                          email_status: <span class="mono">{{ inv.email_status or "—" }}</span>
+                        </div>
+                        {% if inv.customer_email %}
+                        <form method="post" action="{{ url_for('invoice_send_email', invoice_id=inv.id) }}" class="mt-2">
+                          <button class="btn btn-sm btn-outline-secondary" type="submit">Reenviar email</button>
+                        </form>
+                        {% endif %}
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div class="text-muted small mt-2">
-                  pdf_path: <span class="mono">{{ inv.pdf_path or "—" }}</span><br>
-                  email_status: <span class="mono">{{ inv.email_status or "—" }}</span>
-                </div>
-                {% if inv.customer_email %}
-                <form method="post" action="{{ url_for('invoice_send_email', invoice_id=inv.id) }}" class="mt-2">
-                  <button class="btn btn-sm btn-outline-secondary" type="submit">Reenviar email</button>
-                </form>
                 {% endif %}
 </div>
             </div>
@@ -7750,6 +7771,7 @@ def invoice_detail(invoice_id: int):
         afe_nat=AFE_NAT_MAP,
         afe_id=AFE_ID_MAP,
         afe_form=afe_form,
+        ui_debug=ui_debug,
     )
     return render_template_string(BASE_HTML, title=f"Documento #{invoice_id}", db_path=DB_PATH, body=body)
 

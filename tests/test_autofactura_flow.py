@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -95,3 +96,15 @@ def test_afe_new_invoice_without_customer_and_builds_vendor(app_ctx):
         assert "gCamAE" in tags
         assert "gCamItem" in tags
         assert tags.index("gCamItem") < tags.index("gCamAE")
+
+
+def test_afe_new_invoice_city_select(app_ctx):
+    client = webapp.app.test_client()
+
+    resp = client.get("/invoice/new?doc_type=4")
+    assert resp.status_code == 200
+
+    html = resp.get_data(as_text=True)
+    match = re.search(r'<select[^>]*name="afe_ciudad"[^>]*>.*?</select>', html, re.S)
+    assert match is not None
+    assert 'value="1"' in match.group(0)

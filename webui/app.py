@@ -2355,6 +2355,179 @@ def _build_pdf_payload(
             return ""
         return (m.group(1) or "").strip()
 
+    def _join_code_desc(code: str, desc: str) -> str:
+        code = (code or "").strip()
+        desc = (desc or "").strip()
+        if code and desc:
+            return f"{code} - {desc}"
+        return code or desc
+
+    def _code_desc_from(tag_code: str, tag_desc: str, mapping: Optional[dict] = None) -> str:
+        code = find_tag(tag_code)
+        desc = find_tag(tag_desc)
+        if not desc and code and mapping:
+            desc = mapping.get(code, "")
+        return _join_code_desc(code, desc)
+
+    def _append_num_casa(address: str, num_casa: str) -> str:
+        address = (address or "").strip()
+        num_casa = (num_casa or "").strip()
+        if not address:
+            return address
+        if not num_casa:
+            return address
+        addr_lower = address.lower()
+        if all(token not in addr_lower for token in ("nr", "nro", "n°", "nº")):
+            return f"{address} Nr. {num_casa}"
+        return address
+
+    def _section(title: str, items: list[tuple[str, str]], *, fill_missing: bool = False) -> Optional[dict]:
+        cleaned: list[tuple[str, str]] = []
+        has_value = False
+        for label, value in items:
+            val = (value or "").strip()
+            if val:
+                has_value = True
+                cleaned.append((label, val))
+            elif fill_missing:
+                cleaned.append((label, "—"))
+        if not cleaned or not has_value:
+            return None
+        return {"title": title, "items": cleaned}
+
+    doc_type = normalize_doc_type(
+        find_tag("iTiDE") or (invoice["doc_type"] if "doc_type" in invoice.keys() else "")
+    )
+    pdf_header_title = {
+        "1": "Factura electrónica",
+        "4": "Autofactura electrónica",
+        "5": "Nota de crédito electrónica",
+        "6": "Nota de débito electrónica",
+        "7": "Nota de remisión electrónica",
+    }.get(doc_type, "Factura electrónica")
+
+    extra_sections: list[dict] = []
+
+    if doc_type == "4":
+        dir_ven = _append_num_casa(find_tag("dDirVen"), find_tag("dNumCasVen"))
+        dep_ven = _join_code_desc(find_tag("cDepVen"), find_tag("dDesDepVen"))
+        ciu_ven = _join_code_desc(find_tag("cCiuVen"), find_tag("dDesCiuVen"))
+        section = _section(
+            "Datos del vendedor (AFE)",
+            [
+                ("Naturaleza", _code_desc_from("iNatVen", "dDesNatVen", AFE_NAT_MAP)),
+                ("Tipo doc.", _code_desc_from("iTipIDVen", "dDTipIDVen", AFE_ID_MAP)),
+                ("Nro doc.", find_tag("dNumIDVen")),
+                ("Nombre", find_tag("dNomVen")),
+                ("Dirección", dir_ven),
+                ("Departamento", dep_ven),
+                ("Ciudad", ciu_ven),
+            ],
+            fill_missing=True,
+        )
+        if section:
+            extra_sections.append(section)
+
+    if doc_type in ("5", "6"):
+        section = _section(
+            "Documento asociado",
+            [
+                ("Tipo doc. asociado", _code_desc_from("iTipDocAso", "dDesTipDocAso", DOC_ASOC_TYPE_MAP)),
+                ("CDC asociado", find_tag("dCdCDERef")),
+            ],
+            fill_missing=True,
+        )
+        if section:
+            extra_sections.append(section)
+
+        section = _section(
+            "Motivo",
+            [
+                ("Motivo emisión", _code_desc_from("iMotEmi", "dDesMotEmi", NC_MOTIVO_MAP)),
+            ],
+            fill_missing=True,
+        )
+        if section:
+            extra_sections.append(section)
+
+    if doc_type == "7":
+        resp_flete_code = find_tag("iRespFlete")
+        resp_flete = _join_code_desc(resp_flete_code, RESP_FLETE_MAP.get(resp_flete_code, ""))
+        section = _section(
+            "Remisión / Transporte",
+            [
+                ("Motivo remisión", _code_desc_from("iMotEmiNR", "dDesMotEmiNR", REM_MOTIVO_MAP)),
+                ("Responsable emisión", _code_desc_from("iRespEmiNR", "dDesRespEmiNR", REM_RESP_MAP)),
+                ("Km recorridos", find_tag("dKmR")),
+                ("Fecha emisión", find_tag("dFecEm")),
+                ("Tipo transporte", _code_desc_from("iTipTrans", "dDesTipTrans", TRANS_TIPO_MAP)),
+                ("Modalidad transporte", _code_desc_from("iModTrans", "dDesModTrans", TRANS_MOD_MAP)),
+                ("Responsable flete", resp_flete),
+            ],
+            fill_missing=True,
+        )
+        if section:
+            extra_sections.append(section)
+
+        def _loc_section(title: str, suffix: str) -> Optional[dict]:
+            dir_loc = _append_num_casa(find_tag(f"dDirLoc{suffix}"), find_tag(f"dNumCas{suffix}"))
+            dep_loc = _join_code_desc(find_tag(f"cDep{suffix}"), find_tag(f"dDesDep{suffix}"))
+            ciu_loc = _join_code_desc(find_tag(f"cCiu{suffix}"), find_tag(f"dDesCiu{suffix}"))
+            tel_loc = find_tag(f"dTel{suffix}")
+            return _section(
+                title,
+                [
+                    ("Dirección", dir_loc),
+                    ("Departamento", dep_loc),
+                    ("Ciudad", ciu_loc),
+                    ("Teléfono", tel_loc),
+                ],
+                fill_missing=True,
+            )
+
+        sal_section = _loc_section("Salida", "Sal")
+        if sal_section:
+            extra_sections.append(sal_section)
+        ent_section = _loc_section("Entrega", "Ent")
+        if ent_section:
+            extra_sections.append(ent_section)
+
+        veh_id = _join_code_desc(find_tag("dTipIdenVeh"), find_tag("dNroMatVeh") or find_tag("dNroIDVeh"))
+        section = _section(
+            "Vehículo",
+            [
+                ("Tipo", find_tag("dTiVehTras")),
+                ("Marca", find_tag("dMarVeh")),
+                ("Identificación / Número", veh_id),
+            ],
+            fill_missing=True,
+        )
+        if section:
+            extra_sections.append(section)
+
+        trans_doc = ""
+        ruc_trans = find_tag("dRucTrans")
+        dv_trans = find_tag("dDVTrans")
+        if ruc_trans:
+            trans_doc = ruc_trans + (f"-{dv_trans}" if dv_trans else "")
+        else:
+            trans_doc = _join_code_desc(find_tag("iTipIDTrans"), find_tag("dNumIDTrans"))
+
+        section = _section(
+            "Transportista / Chofer",
+            [
+                ("Transportista", find_tag("dNomTrans")),
+                ("Documento", trans_doc),
+                ("Domicilio", find_tag("dDomFisc")),
+                ("Chofer", find_tag("dNomChof")),
+                ("Doc. chofer", find_tag("dNumIDChof")),
+                ("Dir. chofer", find_tag("dDirChof")),
+            ],
+            fill_missing=True,
+        )
+        if section:
+            extra_sections.append(section)
+
     rec_name = find_tag("dNomRec") or ((invoice["customer_name"] if "customer_name" in invoice.keys() else "") or "")
     rec_ruc_raw = find_tag("dRucRec") or cust_ruc
     rec_dv_raw = find_tag("dDVRec")
@@ -2363,12 +2536,7 @@ def _build_pdf_payload(
         ruc_dv = rec_dv_raw
     rec_email = find_tag("dEmailRec") or ((invoice["customer_email"] if "customer_email" in invoice.keys() else "") or "")
 
-    dir_rec = find_tag("dDirRec")
-    num_cas_rec = find_tag("dNumCasRec")
-    if dir_rec and num_cas_rec:
-        dir_lower = dir_rec.lower()
-        if all(token not in dir_lower for token in ("nr", "nro", "n°", "nº")):
-            dir_rec = f"{dir_rec} Nr. {num_cas_rec}"
+    dir_rec = _append_num_casa(find_tag("dDirRec"), find_tag("dNumCasRec"))
     tel_rec = find_tag("dTelRec")
     cond_venta = find_tag("dDCondOpe")
     remision = find_tag("dNumRem")
@@ -2392,12 +2560,24 @@ def _build_pdf_payload(
         "dDCondOpe": cond_venta,
         "dNumRem": remision,
     }
+    default_logo_path = ""
+    try:
+        cand = _repo_root() / "assets" / "industria-feris-isotipo.jpg"
+        if cand.exists():
+            default_logo_path = str(cand)
+    except Exception:
+        default_logo_path = ""
+
     return {
         "CDC": cdc,
         "parsed_fields": parsed_fields,
         "items": items_for_pdf,
         "response_xml": response_xml or "",
         "qr_url": qr_url,
+        "doc_type": doc_type,
+        "pdf_header_title": pdf_header_title,
+        "extra_sections": extra_sections,
+        "default_logo_path": default_logo_path,
     }
 
 def _build_issuer_from_template(template_path: str) -> dict:
@@ -5366,6 +5546,28 @@ def invoice_new():
         request.form.get("doc_type") if request.method == "POST" else request.args.get("doc_type")
     )
 
+    def _build_afe_cities() -> tuple[list[tuple[str, str]], dict]:
+        geo = _load_georef_maps()
+        city_map = geo.get("city") or {}
+        cities: list[tuple[str, str]] = []
+        for code, name in city_map.items():
+            code = str(code).strip()
+            if not code:
+                continue
+            label = str(name or "").strip()
+            if not label:
+                continue
+            if code == "1":
+                label = "Asunción"
+            cities.append((code, label))
+        cities.sort(key=lambda item: item[1].casefold())
+        return cities, city_map
+
+    cities, city_map = _build_afe_cities()
+    default_afe_city = ""
+    if request.method == "GET" and selected_doc_type == "4" and "1" in city_map:
+        default_afe_city = "1"
+
     def _form_value(name: str, default: str = "") -> str:
         if request.method == "POST":
             return (request.form.get(name) or "").strip()
@@ -5385,7 +5587,7 @@ def invoice_new():
         "afe_num_casa": _form_value("afe_num_casa", "0"),
         "afe_departamento": _form_value("afe_departamento", ""),
         "afe_distrito": _form_value("afe_distrito", ""),
-        "afe_ciudad": _form_value("afe_ciudad", ""),
+        "afe_ciudad": _form_value("afe_ciudad", default_afe_city),
         # NC/ND
         "nc_doc_asoc_tipo": _form_value("nc_doc_asoc_tipo", "1"),
         "nc_cdc_asoc": _form_value("nc_cdc_asoc", ""),
@@ -5548,7 +5750,12 @@ def invoice_new():
                       </div>
                       <div class="col-md-3">
                         <label class="form-label">Ciudad (código)</label>
-                        <input class="form-control mono" name="afe_ciudad" data-afe-required="1" placeholder="6106" value="{{ form.get('afe_ciudad') }}">
+                        <select class="form-select" name="afe_ciudad" data-afe-required="1">
+                          <option value="" {% if not form.get('afe_ciudad') %}selected{% endif %}>Seleccionar ciudad...</option>
+                          {% for code, name in cities %}
+                            <option value="{{code}}" {% if form.get("afe_ciudad") == code %}selected{% endif %}>{{name}} ({{code}})</option>
+                          {% endfor %}
+                        </select>
                       </div>
                     </div>
                     <div class="small text-muted mt-2">
@@ -6200,6 +6407,7 @@ def invoice_new():
             veh_tipos=VEH_TIPO_MAP,
             doc_impreso_types=DOC_IMPRESO_TYPE_MAP,
             form=form_values,
+            cities=cities,
             items=items_form,
             error=error,
         )

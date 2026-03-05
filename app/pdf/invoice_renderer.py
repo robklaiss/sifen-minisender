@@ -1086,6 +1086,13 @@ def render_invoice_pdf(data: Dict[str, Any], issuer: Dict[str, Any], out_path: P
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    default_logo_path = _clean(data.get("default_logo_path"))
+    if default_logo_path:
+        logo_path = _clean(issuer.get("logo_path"))
+        if not logo_path or not Path(logo_path).exists():
+            if Path(default_logo_path).exists():
+                issuer["logo_path"] = default_logo_path
+
     parsed = data.get("parsed_fields") if isinstance(data.get("parsed_fields"), dict) else {}
     xml_fields = _extract_xml_fields(_clean(data.get("response_xml")) or "")
     cdc = _extract_cdc(data, parsed)
@@ -1164,12 +1171,13 @@ def render_invoice_pdf(data: Dict[str, Any], issuer: Dict[str, Any], out_path: P
     else:
         timbrado_vigencia = _ND
 
+    header_title = _clean(data.get("pdf_header_title")) or "FACTURA"
     header_box_height = _draw_header_box(
         c,
         x_left + left_width + header_gap,
         y_top,
         header_box_width,
-        "FACTURA",
+        header_title,
         [
             ("Serie / Número", f"{doc_series} / {doc_number}"),
             ("Fecha de emisión", fecha_emision),
@@ -1214,6 +1222,36 @@ def render_invoice_pdf(data: Dict[str, Any], issuer: Dict[str, Any], out_path: P
     else:
         _draw_hr(c, y, x_left, x_right)
         y -= 6 * mm
+
+    extra_sections = data.get("extra_sections")
+    if isinstance(extra_sections, list):
+        for section in extra_sections:
+            if not isinstance(section, dict):
+                continue
+            title = _clean(section.get("title"))
+            items_raw = section.get("items")
+            if not title or not isinstance(items_raw, list):
+                continue
+
+            items: List[Tuple[str, str]] = []
+            for item in items_raw:
+                label = ""
+                value = ""
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    label = str(item[0]) if item[0] is not None else ""
+                    value = "" if item[1] is None else str(item[1])
+                elif isinstance(item, dict):
+                    label = str(item.get("label") or "")
+                    value = "" if item.get("value") is None else str(item.get("value"))
+                if not label:
+                    continue
+                items.append((label, value))
+
+            if not items:
+                continue
+
+            block_height = _draw_info_block(c, x_left, y, content_width, title, items)
+            y -= block_height + 6 * mm
 
     items_raw = _extract_items(data, parsed)
     total_exentas = 0.0

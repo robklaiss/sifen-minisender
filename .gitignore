@@ -42,3 +42,6 @@ prod/
 /_snapshots/
 /responde
 tools/_legacy/
+
+# local scratch
+backups_local/

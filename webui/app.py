@@ -3782,24 +3782,29 @@ BASE_HTML = """
 </head>
 <body>
   <div class="container">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <div class="d-flex align-items-center gap-3">
-        <img src="{{ url_for('issuer_logo') }}" alt="Industria Feris" class="brand-logo" onerror="this.style.display='none'">
-        <div>
-          <h3 class="mb-0">Industria Feris - Facturación</h3>
+    <nav class="navbar navbar-expand-md mb-3">
+      <div class="container-fluid px-0">
+        <a class="navbar-brand d-flex align-items-center gap-3 mb-0" href="{{ url_for('invoices') }}">
+          <img src="{{ url_for('issuer_logo') }}" alt="Industria Feris" class="brand-logo" onerror="this.style.display='none'">
+          <span class="h3 mb-0">Industria Feris - Facturación</span>
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNavbar" aria-controls="mainNavbar" aria-expanded="false" aria-label="Alternar navegación">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="mainNavbar">
+          <div class="d-flex flex-column flex-md-row ms-auto gap-2 pt-3 pt-md-0 align-items-stretch align-items-md-center">
+            <a class="btn btn-outline-secondary" href="{{ url_for('invoices') }}" title="Inicio" aria-label="Inicio">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M8.354 1.146a.5.5 0 0 0-.708 0l-6 6A.5.5 0 0 0 2 7.5V14a1 1 0 0 0 1 1h4a.5.5 0 0 0 .5-.5V10h1v4.5a.5.5 0 0 0 .5.5h4a1 1 0 0 0 1-1V7.5a.5.5 0 0 0 .146-.354.5.5 0 0 0-.146-.353l-6-6z"/>
+              </svg>
+            </a>
+            <a class="btn btn-outline-secondary" href="{{ url_for('customers') }}">Clientes</a>
+            <a class="btn btn-outline-secondary" href="{{ url_for('products') }}">Productos</a>
+            <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#newDocModal">Nuevo documento</button>
+          </div>
         </div>
       </div>
-      <div class="d-flex gap-2">
-        <a class="btn btn-outline-secondary" href="{{ url_for('invoices') }}" title="Inicio" aria-label="Inicio">
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M8.354 1.146a.5.5 0 0 0-.708 0l-6 6A.5.5 0 0 0 2 7.5V14a1 1 0 0 0 1 1h4a.5.5 0 0 0 .5-.5V10h1v4.5a.5.5 0 0 0 .5.5h4a1 1 0 0 0 1-1V7.5a.5.5 0 0 0 .146-.354.5.5 0 0 0-.146-.353l-6-6z"/>
-          </svg>
-        </a>
-        <a class="btn btn-outline-secondary" href="{{ url_for('customers') }}">Clientes</a>
-        <a class="btn btn-outline-secondary" href="{{ url_for('products') }}">Productos</a>
-        <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#newDocModal">Nuevo documento</button>
-      </div>
-    </div>
+    </nav>
 
     {{ body|safe }}
 

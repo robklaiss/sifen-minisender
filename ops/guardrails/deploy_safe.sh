@@ -3,13 +3,16 @@ set -euo pipefail
 
 git config --global --add safe.directory "$(pwd)" || true
 
+COMPOSE="sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+$COMPOSE config >/dev/null
+
 bash ops/guardrails/pre_deploy_check.sh
 
 git pull --ff-only
-docker compose up -d --build web
+$COMPOSE up -d --build
 sleep 2
 bash ops/guardrails/pre_deploy_check.sh
-docker compose restart web
+$COMPOSE up -d --build
 
 bash ops/guardrails/pre_deploy_check.sh
 

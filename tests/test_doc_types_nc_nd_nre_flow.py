@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import json
 import sys
 import xml.etree.ElementTree as ET
 
@@ -29,6 +30,35 @@ def _create_customer() -> int:
     con.commit()
     row = con.execute("SELECT last_insert_rowid() AS id").fetchone()
     return int(row["id"])
+
+
+def _find_asuncion_geo() -> tuple[str, str, str]:
+    tree = json.loads(Path("data/georef_tree.json").read_text(encoding="utf-8"))
+    city_by_dist = tree.get("city_by_dist", {})
+    dist_to_dep = tree.get("dist_to_dep", {})
+
+    def _pick(match) -> tuple[str, str, str]:
+        for dist_code, cities in city_by_dist.items():
+            if not isinstance(cities, dict):
+                continue
+            for city_code, name in cities.items():
+                label = str(name or "")
+                if match(label):
+                    dep_code = dist_to_dep.get(str(dist_code), "")
+                    return (
+                        webapp._geo_display_code(dep_code),
+                        webapp._geo_display_code(dist_code),
+                        webapp._geo_display_code(city_code),
+                    )
+        return ("", "", "")
+
+    exact = _pick(lambda label: label.strip().upper() == "ASUNCION (DISTRITO)")
+    if any(exact):
+        return exact
+    contains = _pick(lambda label: "ASUNCION" in label.upper())
+    if any(contains):
+        return contains
+    raise AssertionError("Asunción no encontrado en georef_tree.json")
 
 
 @pytest.mark.parametrize("doc_type", ["5", "6"])
@@ -95,6 +125,7 @@ def test_nre_new_invoice_builds_transporte(app_ctx):
     with webapp.app.app_context():
         customer_id = _create_customer()
 
+    dep_code, dist_code, city_code = _find_asuncion_geo()
     payload = {
         "doc_type": "7",
         "customer_id": str(customer_id),
@@ -109,12 +140,14 @@ def test_nre_new_invoice_builds_transporte(app_ctx):
         "nre_trans_resp_flete": "1",
         "nre_sal_direccion": "Calle 1",
         "nre_sal_num_casa": "0",
-        "nre_sal_departamento": "12",
-        "nre_sal_ciudad": "6106",
+        "nre_sal_departamento": dep_code,
+        "nre_sal_distrito": dist_code,
+        "nre_sal_ciudad": city_code,
         "nre_ent_direccion": "Calle 2",
         "nre_ent_num_casa": "0",
-        "nre_ent_departamento": "12",
-        "nre_ent_ciudad": "6106",
+        "nre_ent_departamento": dep_code,
+        "nre_ent_distrito": dist_code,
+        "nre_ent_ciudad": city_code,
         "nre_veh_tipo": "1",
         "nre_veh_marca": "Toyota",
         "nre_veh_doc_tipo": "1",

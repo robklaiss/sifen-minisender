@@ -944,6 +944,41 @@ def _validate_doc_extra(doc_type: str, extra_json: dict) -> list:
                 if not str(loc.get("ciudad") or "").strip():
                     errors.append(f"Transporte {label}: falta ciudad.")
 
+            geo_tree = _load_georef_tree()
+            if geo_tree:
+                dep_map = geo_tree.get("dep") or {}
+                dist_to_dep = geo_tree.get("dist_to_dep") or {}
+                city_to_dist = geo_tree.get("city_to_dist") or {}
+                for label, loc in [("salida", salida), ("entrega", entrega)]:
+                    dep_raw = str(loc.get("departamento") or "").strip()
+                    dist_raw = str(loc.get("distrito") or "").strip()
+                    city_raw = str(loc.get("ciudad") or "").strip()
+                    dep_norm = _zfill_digits(dep_raw, 2)
+                    dist_norm = _zfill_digits(dist_raw, 4)
+                    city_norm = _zfill_digits(city_raw, 5)
+
+                    if dep_norm and dep_norm not in dep_map:
+                        errors.append(f"Transporte {label}: departamento inválido (no existe en catálogo).")
+                    if dist_norm and dist_norm not in dist_to_dep:
+                        errors.append(f"Transporte {label}: distrito inválido (no existe en catálogo).")
+                    if city_norm and city_norm not in city_to_dist:
+                        errors.append(f"Transporte {label}: ciudad inválida (no existe en catálogo).")
+
+                    expected_dist = city_to_dist.get(city_norm)
+                    if expected_dist:
+                        if not dist_norm:
+                            errors.append(f"Transporte {label}: falta distrito para la ciudad indicada.")
+                        elif expected_dist != dist_norm:
+                            errors.append(f"Transporte {label}: ciudad no pertenece al distrito indicado.")
+
+                    expected_dep = dist_to_dep.get(dist_norm)
+                    if expected_dep and dep_norm and expected_dep != dep_norm:
+                        errors.append(f"Transporte {label}: distrito no pertenece al departamento indicado.")
+                    if expected_dist and dep_norm:
+                        dep_from_city = dist_to_dep.get(expected_dist)
+                        if dep_from_city and dep_from_city != dep_norm:
+                            errors.append(f"Transporte {label}: ciudad no pertenece al departamento indicado.")
+
             veh = transporte.get("vehiculo") or {}
             if not str(veh.get("tipo") or "").strip():
                 errors.append("Vehículo: falta tipo.")
@@ -5639,6 +5674,7 @@ def invoice_new():
             continue
         afe_departamentos.append((_geo_display_code(code), label))
     afe_departamentos.sort(key=lambda item: item[1].casefold())
+    geo_departamentos = afe_departamentos
 
     def _find_default_afe_geo(tree: dict) -> tuple[str, str, str]:
         city_by_dist = tree.get("city_by_dist") or {}
@@ -5653,6 +5689,12 @@ def invoice_new():
                     continue
                 norm = label.casefold()
                 dep_code = dist_to_dep.get(str(dist_code), "")
+                if norm == "asuncion (distrito)":
+                    return (
+                        _geo_display_code(dep_code),
+                        _geo_display_code(dist_code),
+                        _geo_display_code(city_code),
+                    )
                 if norm == "asuncion":
                     return (
                         _geo_display_code(dep_code),
@@ -5672,6 +5714,11 @@ def invoice_new():
     default_afe_city = ""
     if request.method == "GET" and selected_doc_type == "4":
         default_afe_dep, default_afe_dist, default_afe_city = _find_default_afe_geo(geo_tree)
+    default_nre_dep = ""
+    default_nre_dist = ""
+    default_nre_city = ""
+    if request.method == "GET" and selected_doc_type == "7":
+        default_nre_dep, default_nre_dist, default_nre_city = _find_default_afe_geo(geo_tree)
 
     def _form_value(name: str, default: str = "") -> str:
         if request.method == "POST":
@@ -5713,15 +5760,15 @@ def invoice_new():
         "nre_trans_resp_flete": _form_value("nre_trans_resp_flete", "1"),
         "nre_sal_direccion": _form_value("nre_sal_direccion", ""),
         "nre_sal_num_casa": _form_value("nre_sal_num_casa", ""),
-        "nre_sal_departamento": _form_value("nre_sal_departamento", ""),
-        "nre_sal_distrito": _form_value("nre_sal_distrito", ""),
-        "nre_sal_ciudad": _form_value("nre_sal_ciudad", ""),
+        "nre_sal_departamento": _form_value("nre_sal_departamento", default_nre_dep),
+        "nre_sal_distrito": _form_value("nre_sal_distrito", default_nre_dist),
+        "nre_sal_ciudad": _form_value("nre_sal_ciudad", default_nre_city),
         "nre_sal_telefono": _form_value("nre_sal_telefono", ""),
         "nre_ent_direccion": _form_value("nre_ent_direccion", ""),
         "nre_ent_num_casa": _form_value("nre_ent_num_casa", ""),
-        "nre_ent_departamento": _form_value("nre_ent_departamento", ""),
-        "nre_ent_distrito": _form_value("nre_ent_distrito", ""),
-        "nre_ent_ciudad": _form_value("nre_ent_ciudad", ""),
+        "nre_ent_departamento": _form_value("nre_ent_departamento", default_nre_dep),
+        "nre_ent_distrito": _form_value("nre_ent_distrito", default_nre_dist),
+        "nre_ent_ciudad": _form_value("nre_ent_ciudad", default_nre_city),
         "nre_ent_telefono": _form_value("nre_ent_telefono", ""),
         "nre_veh_tipo": _form_value("nre_veh_tipo", "1"),
         "nre_veh_marca": _form_value("nre_veh_marca", ""),
@@ -5757,6 +5804,22 @@ def invoice_new():
         afe_distritos = _geo_entries((geo_tree.get("dist_by_dep") or {}).get(dep_sel, {}))
     if dist_sel:
         afe_ciudades = _geo_entries((geo_tree.get("city_by_dist") or {}).get(dist_sel, {}))
+    nre_sal_distritos: list[tuple[str, str]] = []
+    nre_sal_ciudades: list[tuple[str, str]] = []
+    nre_ent_distritos: list[tuple[str, str]] = []
+    nre_ent_ciudades: list[tuple[str, str]] = []
+    nre_sal_dep_sel = _zfill_digits(form_values.get("nre_sal_departamento"), 2)
+    nre_sal_dist_sel = _zfill_digits(form_values.get("nre_sal_distrito"), 4)
+    nre_ent_dep_sel = _zfill_digits(form_values.get("nre_ent_departamento"), 2)
+    nre_ent_dist_sel = _zfill_digits(form_values.get("nre_ent_distrito"), 4)
+    if nre_sal_dep_sel:
+        nre_sal_distritos = _geo_entries((geo_tree.get("dist_by_dep") or {}).get(nre_sal_dep_sel, {}))
+    if nre_sal_dist_sel:
+        nre_sal_ciudades = _geo_entries((geo_tree.get("city_by_dist") or {}).get(nre_sal_dist_sel, {}))
+    if nre_ent_dep_sel:
+        nre_ent_distritos = _geo_entries((geo_tree.get("dist_by_dep") or {}).get(nre_ent_dep_sel, {}))
+    if nre_ent_dist_sel:
+        nre_ent_ciudades = _geo_entries((geo_tree.get("city_by_dist") or {}).get(nre_ent_dist_sel, {}))
 
     def _build_items_form() -> list[dict]:
         if request.method == "POST":
@@ -6036,15 +6099,33 @@ def invoice_new():
                       </div>
                       <div class="col-md-2">
                         <label class="form-label">Departamento</label>
-                        <input class="form-control mono" name="nre_sal_departamento" data-nre-required="1" placeholder="12" value="{{ form.get('nre_sal_departamento') }}">
-                      </div>
-                      <div class="col-md-2">
-                        <label class="form-label">Ciudad</label>
-                        <input class="form-control mono" name="nre_sal_ciudad" data-nre-required="1" placeholder="6106" value="{{ form.get('nre_sal_ciudad') }}">
+                        <select class="form-select" name="nre_sal_departamento" id="nre-sal-dep-select" data-nre-required="1"
+                                data-georef-url="{{ georef_url }}" data-initial="{{ form.get('nre_sal_departamento') }}">
+                          <option value="" {% if not form.get('nre_sal_departamento') %}selected{% endif %}>Seleccioná departamento…</option>
+                          {% for code, name in geo_departamentos %}
+                            <option value="{{code}}" {% if form.get("nre_sal_departamento") == code %}selected{% endif %}>{{name}} ({{code}})</option>
+                          {% endfor %}
+                        </select>
                       </div>
                       <div class="col-md-2">
                         <label class="form-label">Distrito</label>
-                        <input class="form-control mono" name="nre_sal_distrito" placeholder="(opcional)" value="{{ form.get('nre_sal_distrito') }}">
+                        <select class="form-select" name="nre_sal_distrito" id="nre-sal-dist-select" data-nre-required="1"
+                                data-initial="{{ form.get('nre_sal_distrito') }}" disabled>
+                          <option value="" {% if not form.get('nre_sal_distrito') %}selected{% endif %}>Seleccioná distrito…</option>
+                          {% for code, name in nre_sal_distritos %}
+                            <option value="{{code}}" {% if form.get("nre_sal_distrito") == code %}selected{% endif %}>{{name}} ({{code}})</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Ciudad</label>
+                        <select class="form-select" name="nre_sal_ciudad" id="nre-sal-city-select" data-nre-required="1"
+                                data-initial="{{ form.get('nre_sal_ciudad') }}" disabled>
+                          <option value="" {% if not form.get('nre_sal_ciudad') %}selected{% endif %}>Seleccioná ciudad…</option>
+                          {% for code, name in nre_sal_ciudades %}
+                            <option value="{{code}}" {% if form.get("nre_sal_ciudad") == code %}selected{% endif %}>{{name}} ({{code}})</option>
+                          {% endfor %}
+                        </select>
                       </div>
                       <div class="col-md-4">
                         <label class="form-label">Teléfono</label>
@@ -6064,15 +6145,33 @@ def invoice_new():
                       </div>
                       <div class="col-md-2">
                         <label class="form-label">Departamento</label>
-                        <input class="form-control mono" name="nre_ent_departamento" data-nre-required="1" placeholder="12" value="{{ form.get('nre_ent_departamento') }}">
-                      </div>
-                      <div class="col-md-2">
-                        <label class="form-label">Ciudad</label>
-                        <input class="form-control mono" name="nre_ent_ciudad" data-nre-required="1" placeholder="6106" value="{{ form.get('nre_ent_ciudad') }}">
+                        <select class="form-select" name="nre_ent_departamento" id="nre-ent-dep-select" data-nre-required="1"
+                                data-georef-url="{{ georef_url }}" data-initial="{{ form.get('nre_ent_departamento') }}">
+                          <option value="" {% if not form.get('nre_ent_departamento') %}selected{% endif %}>Seleccioná departamento…</option>
+                          {% for code, name in geo_departamentos %}
+                            <option value="{{code}}" {% if form.get("nre_ent_departamento") == code %}selected{% endif %}>{{name}} ({{code}})</option>
+                          {% endfor %}
+                        </select>
                       </div>
                       <div class="col-md-2">
                         <label class="form-label">Distrito</label>
-                        <input class="form-control mono" name="nre_ent_distrito" placeholder="(opcional)" value="{{ form.get('nre_ent_distrito') }}">
+                        <select class="form-select" name="nre_ent_distrito" id="nre-ent-dist-select" data-nre-required="1"
+                                data-initial="{{ form.get('nre_ent_distrito') }}" disabled>
+                          <option value="" {% if not form.get('nre_ent_distrito') %}selected{% endif %}>Seleccioná distrito…</option>
+                          {% for code, name in nre_ent_distritos %}
+                            <option value="{{code}}" {% if form.get("nre_ent_distrito") == code %}selected{% endif %}>{{name}} ({{code}})</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Ciudad</label>
+                        <select class="form-select" name="nre_ent_ciudad" id="nre-ent-city-select" data-nre-required="1"
+                                data-initial="{{ form.get('nre_ent_ciudad') }}" disabled>
+                          <option value="" {% if not form.get('nre_ent_ciudad') %}selected{% endif %}>Seleccioná ciudad…</option>
+                          {% for code, name in nre_ent_ciudades %}
+                            <option value="{{code}}" {% if form.get("nre_ent_ciudad") == code %}selected{% endif %}>{{name}} ({{code}})</option>
+                          {% endfor %}
+                        </select>
                       </div>
                       <div class="col-md-4">
                         <label class="form-label">Teléfono</label>
@@ -6368,11 +6467,8 @@ def invoice_new():
                 }
                 document.addEventListener("DOMContentLoaded", function () {
                   toggleDocSections();
-                  initAfeGeo();
+                  initGeoCascades();
                 });
-                const afeDepSelect = document.getElementById("afe-dep-select");
-                const afeDistSelect = document.getElementById("afe-dist-select");
-                const afeCitySelect = document.getElementById("afe-city-select");
 
                 function normalizeGeo(value, width) {
                   if (!value) return "";
@@ -6418,6 +6514,9 @@ def invoice_new():
                 }
 
                 function syncGeoDisabled() {
+                  const afeDepSelect = document.getElementById("afe-dep-select");
+                  const afeDistSelect = document.getElementById("afe-dist-select");
+                  const afeCitySelect = document.getElementById("afe-city-select");
                   if (!afeDepSelect || !afeDistSelect || !afeCitySelect) return;
                   const depVal = (afeDepSelect.value || "").trim();
                   const distVal = (afeDistSelect.value || "").trim();
@@ -6425,79 +6524,121 @@ def invoice_new():
                   afeCitySelect.disabled = !distVal;
                 }
 
-                async function initAfeGeo() {
-                  if (!afeDepSelect || !afeDistSelect || !afeCitySelect) return;
-                  const georefUrl = afeDepSelect.getAttribute("data-georef-url");
+                const geoCache = { promise: null, data: null };
+
+                function loadGeoTree(georefUrl) {
+                  if (!georefUrl) {
+                    return Promise.reject(new Error("missing georef url"));
+                  }
+                  if (geoCache.data) {
+                    return Promise.resolve(geoCache.data);
+                  }
+                  if (!geoCache.promise) {
+                    geoCache.promise = fetch(georefUrl).then((resp) => {
+                      if (!resp.ok) throw new Error("HTTP " + resp.status);
+                      return resp.json();
+                    }).then((data) => {
+                      geoCache.data = data;
+                      return data;
+                    });
+                  }
+                  return geoCache.promise;
+                }
+
+                function bindGeoCascade(depSelect, distSelect, citySelect, placeholders) {
+                  if (!depSelect || !distSelect || !citySelect) return;
+                  const georefUrl = depSelect.getAttribute("data-georef-url");
                   if (!georefUrl) return;
 
-                  let geo;
-                  try {
-                    const resp = await fetch(georefUrl);
-                    if (!resp.ok) throw new Error("HTTP " + resp.status);
-                    geo = await resp.json();
-                  } catch (err) {
+                  const distPlaceholder = (placeholders && placeholders.dist) || "Seleccioná distrito…";
+                  const cityPlaceholder = (placeholders && placeholders.city) || "Seleccioná ciudad…";
+
+                  loadGeoTree(georefUrl).then((geo) => {
+                    const distByDep = geo.dist_by_dep || {};
+                    const cityByDist = geo.city_by_dist || {};
+                    const cityToDist = geo.city_to_dist || {};
+                    const distToDep = geo.dist_to_dep || {};
+
+                    let depVal = normalizeGeo(depSelect.getAttribute("data-initial"), 2);
+                    let distVal = normalizeGeo(distSelect.getAttribute("data-initial"), 4);
+                    let cityVal = normalizeGeo(citySelect.getAttribute("data-initial"), 5);
+
+                    if (!distVal && cityVal) {
+                      distVal = normalizeGeo(cityToDist[cityVal], 4);
+                    }
+                    if (!depVal && distVal) {
+                      depVal = normalizeGeo(distToDep[distVal], 2);
+                    }
+
+                    const depDisplay = displayGeo(depVal);
+                    const distDisplay = displayGeo(distVal);
+                    const cityDisplay = displayGeo(cityVal);
+
+                    if (depDisplay) {
+                      depSelect.value = depDisplay;
+                    }
+
+                    function updateCities(selectedCity) {
+                      const distCode = normalizeGeo(distSelect.value, 4);
+                      const cityEntries = sortEntries(cityByDist[distCode] || {});
+                      setSelectOptions(citySelect, cityEntries, cityPlaceholder, selectedCity);
+                      citySelect.disabled = !distCode;
+                    }
+
+                    function updateDistricts(selectedDist, selectedCity) {
+                      const depCode = normalizeGeo(depSelect.value, 2);
+                      const distEntries = sortEntries(distByDep[depCode] || {});
+                      setSelectOptions(distSelect, distEntries, distPlaceholder, selectedDist);
+                      distSelect.disabled = !depCode;
+                      if (selectedDist) {
+                        distSelect.value = selectedDist;
+                      }
+                      updateCities(selectedCity);
+                      if (selectedCity) {
+                        citySelect.value = selectedCity;
+                      }
+                    }
+
+                    updateDistricts(distDisplay, cityDisplay);
+
+                    depSelect.addEventListener("change", function () {
+                      updateDistricts(\"\", \"\");
+                    });
+                    distSelect.addEventListener("change", function () {
+                      updateCities(\"\");
+                    });
+                  }).catch((err) => {
                     console.warn("No se pudo cargar georef_tree.json", err);
-                    return;
-                  }
-
-                  const distByDep = geo.dist_by_dep || {};
-                  const cityByDist = geo.city_by_dist || {};
-                  const cityToDist = geo.city_to_dist || {};
-                  const distToDep = geo.dist_to_dep || {};
-
-                  let depVal = normalizeGeo(afeDepSelect.getAttribute("data-initial"), 2);
-                  let distVal = normalizeGeo(afeDistSelect.getAttribute("data-initial"), 4);
-                  let cityVal = normalizeGeo(afeCitySelect.getAttribute("data-initial"), 5);
-
-                  if (!distVal && cityVal) {
-                    distVal = normalizeGeo(cityToDist[cityVal], 4);
-                  }
-                  if (!depVal && distVal) {
-                    depVal = normalizeGeo(distToDep[distVal], 2);
-                  }
-
-                  const depDisplay = displayGeo(depVal);
-                  const distDisplay = displayGeo(distVal);
-                  const cityDisplay = displayGeo(cityVal);
-
-                  if (depDisplay) {
-                    afeDepSelect.value = depDisplay;
-                  }
-
-                  function updateCities(selectedCity) {
-                    const distCode = normalizeGeo(afeDistSelect.value, 4);
-                    const cityEntries = sortEntries(cityByDist[distCode] || {});
-                    setSelectOptions(afeCitySelect, cityEntries, "Elegí una ciudad", selectedCity);
-                    afeCitySelect.disabled = !distCode;
-                  }
-
-                  function updateDistricts(selectedDist, selectedCity) {
-                    const depCode = normalizeGeo(afeDepSelect.value, 2);
-                    const distEntries = sortEntries(distByDep[depCode] || {});
-                    setSelectOptions(afeDistSelect, distEntries, "Elegí un distrito", selectedDist);
-                    afeDistSelect.disabled = !depCode;
-                    if (selectedDist) {
-                      afeDistSelect.value = selectedDist;
-                    }
-                    updateCities(selectedCity);
-                    if (selectedCity) {
-                      afeCitySelect.value = selectedCity;
-                    }
-                  }
-
-                  updateDistricts(distDisplay, cityDisplay);
-
-                  afeDepSelect.addEventListener("change", function () {
-                    updateDistricts(\"\", \"\");
                   });
-                  afeDistSelect.addEventListener("change", function () {
-                    updateCities(\"\");
+                }
+
+                function initGeoCascades() {
+                  const afeDepSelect = document.getElementById("afe-dep-select");
+                  const afeDistSelect = document.getElementById("afe-dist-select");
+                  const afeCitySelect = document.getElementById("afe-city-select");
+                  bindGeoCascade(afeDepSelect, afeDistSelect, afeCitySelect, {
+                    dist: "Elegí un distrito",
+                    city: "Elegí una ciudad",
+                  });
+
+                  const nreSalDepSelect = document.getElementById("nre-sal-dep-select");
+                  const nreSalDistSelect = document.getElementById("nre-sal-dist-select");
+                  const nreSalCitySelect = document.getElementById("nre-sal-city-select");
+                  bindGeoCascade(nreSalDepSelect, nreSalDistSelect, nreSalCitySelect, {
+                    dist: "Seleccioná distrito…",
+                    city: "Seleccioná ciudad…",
+                  });
+
+                  const nreEntDepSelect = document.getElementById("nre-ent-dep-select");
+                  const nreEntDistSelect = document.getElementById("nre-ent-dist-select");
+                  const nreEntCitySelect = document.getElementById("nre-ent-city-select");
+                  bindGeoCascade(nreEntDepSelect, nreEntDistSelect, nreEntCitySelect, {
+                    dist: "Seleccioná distrito…",
+                    city: "Seleccioná ciudad…",
                   });
 
                   syncGeoDisabled();
                 }
-
-                toggleDocSections();
 
                 const container = document.getElementById("items-container");
                 const addBtn = document.getElementById("add-item");
@@ -6682,6 +6823,11 @@ def invoice_new():
             afe_departamentos=afe_departamentos,
             afe_distritos=afe_distritos,
             afe_ciudades=afe_ciudades,
+            geo_departamentos=geo_departamentos,
+            nre_sal_distritos=nre_sal_distritos,
+            nre_sal_ciudades=nre_sal_ciudades,
+            nre_ent_distritos=nre_ent_distritos,
+            nre_ent_ciudades=nre_ent_ciudades,
             georef_url=url_for("georef_tree"),
             items=items_form,
             error=error,

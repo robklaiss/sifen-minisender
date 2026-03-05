@@ -3604,6 +3604,141 @@ BASE_HTML = """
       setInterval(check, 15000);
     })();
   </script>
+  <style>
+  /* Botón fijo abajo-izquierda */
+  .logout-fab{
+    position:fixed;
+    bottom:20px;
+    left:20px;
+    background:#fff;
+    border:1px solid #ddd;
+    padding:10px 14px;
+    box-shadow:0 4px 12px rgba(0,0,0,0.2);
+    font-family:sans-serif;
+    border-radius:999px;
+    cursor:pointer;
+    z-index:9999;
+  }
+
+  /* Warning box abajo-derecha */
+  #session-warning{
+    position:fixed;
+    bottom:140px;
+    right:20px;
+    background:#fff;
+    border:1px solid #ddd;
+    padding:16px;
+    box-shadow:0 4px 12px rgba(0,0,0,0.2);
+    font-family:sans-serif;
+    width:280px;
+    display:none;
+    z-index:9999;
+  }
+  #session-warning button{
+    margin-top:10px;
+    margin-right:10px;
+  }
+  </style>
+
+  <button class="logout-fab" type="button" onclick="logout()">Cerrar sesión</button>
+
+  <div id="session-warning">
+    <strong>Tu sesión está por expirar</strong><br><br>
+    Se cerrará en <span id="countdown">120</span> segundos.
+    <br><br>
+    <button type="button" onclick="stayLoggedIn()">Seguir conectado</button>
+    <button type="button" onclick="logout()">Cerrar sesión</button>
+  </div>
+
+  <script>
+  (function(){
+    const SESSION_LIMIT = 30 * 60 * 1000; // 30 min
+    const WARNING_TIME  = 2 * 60 * 1000;  // aviso 2 min antes
+
+    let inactivityTimer;
+    let warningTimer;
+    let countdownInterval;
+    let remaining = 120;
+
+    function _getWarningEl(){
+      return document.getElementById("session-warning");
+    }
+    function _getCountdownEl(){
+      return document.getElementById("countdown");
+    }
+
+    function resetTimers(){
+      clearTimeout(inactivityTimer);
+      clearTimeout(warningTimer);
+      clearInterval(countdownInterval);
+
+      const box = _getWarningEl();
+      if (box) box.style.display = "none";
+
+      warningTimer = setTimeout(showWarning, SESSION_LIMIT - WARNING_TIME);
+      inactivityTimer = setTimeout(logout, SESSION_LIMIT);
+    }
+
+    function showWarning(){
+      const box = _getWarningEl();
+      const countdown = _getCountdownEl();
+      if (!box || !countdown) return;
+
+      remaining = 120;
+      countdown.textContent = remaining;
+
+      box.style.display = "block";
+
+      countdownInterval = setInterval(() => {
+        remaining--;
+        countdown.textContent = remaining;
+
+        if (remaining <= 0){
+          logout();
+        }
+      }, 1000);
+    }
+
+    function refreshSession(){
+      const url = "https://auth.fe.if.com.py/oauth2/authorize"+
+        "?client_id=6729u9gs4ua36ul6n5m1hl5lbl"+
+        "&response_type=code"+
+        "&scope=email+openid+phone"+
+        "&redirect_uri="+encodeURIComponent(window.location.href)+
+        "&prompt=none";
+
+      const iframe = document.createElement("iframe");
+      iframe.style.display = "none";
+      iframe.src = url;
+      document.body.appendChild(iframe);
+
+      setTimeout(() => iframe.remove(), 5000);
+    }
+
+    window.stayLoggedIn = function stayLoggedIn(){
+      refreshSession();
+      resetTimers();
+    };
+
+    window.logout = function logout(){
+      window.location.href =
+        "https://auth.fe.if.com.py/logout"+
+        "?client_id=6729u9gs4ua36ul6n5m1hl5lbl"+
+        "&logout_uri=https://fe.if.com.py";
+    };
+
+    function bindActivityListeners(){
+      ["mousemove","keydown","click","scroll"].forEach(event => {
+        document.addEventListener(event, () => resetTimers(), { passive: true });
+      });
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      bindActivityListeners();
+      resetTimers();
+    });
+  })();
+  </script>
 </body>
 </html>
 """

@@ -3694,7 +3694,7 @@ BASE_HTML = """
         </a>
         <a class="btn btn-outline-secondary" href="{{ url_for('customers') }}">Clientes</a>
         <a class="btn btn-outline-secondary" href="{{ url_for('products') }}">Productos</a>
-        <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#newDocModal">Documento nuevo</button>
+        <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#newDocModal">Nuevo documento</button>
       </div>
     </div>
 
@@ -3705,7 +3705,7 @@ BASE_HTML = """
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title">Documento nuevo</h5>
+          <h5 class="modal-title">Nuevo documento</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
@@ -5660,7 +5660,7 @@ def invoice_new():
             """
         <div class="card">
           <div class="card-body">
-            <h5>Nuevo documento (mínimo viable)</h5>
+            <h5>Nuevo documento</h5>
             {% if error %}
               <div class="alert alert-danger mt-3" style="white-space: pre-line;">{{ error }}</div>
             {% endif %}
@@ -6411,7 +6411,7 @@ def invoice_new():
             items=items_form,
             error=error,
         )
-        return render_template_string(BASE_HTML, title="Documento nuevo", db_path=DB_PATH, body=body), status
+        return render_template_string(BASE_HTML, title="Nuevo documento", db_path=DB_PATH, body=body), status
 
     if request.method == "POST":
         doc_type = normalize_doc_type(request.form.get("doc_type"))

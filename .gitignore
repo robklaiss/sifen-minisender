@@ -45,3 +45,6 @@ tools/_legacy/
 
 # local scratch
 backups_local/
+
+# generated geo tree (optional artifact)
+data/georef_tree_2025.json

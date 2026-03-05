@@ -735,6 +735,32 @@ def _load_georef_maps() -> dict:
     _GEOREF_CACHE = {"dep": {}, "dist": {}, "city": {}}
     return _GEOREF_CACHE
 
+_GEO_TREE_CACHE = None
+
+def _load_georef_tree() -> dict:
+    global _GEO_TREE_CACHE
+    if _GEO_TREE_CACHE is not None:
+        return _GEO_TREE_CACHE
+    candidates = [
+        _repo_root() / "data" / "georef_tree.json",
+        _repo_root() / "data" / "georef_tree_2025.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                _GEO_TREE_CACHE = json.loads(path.read_text(encoding="utf-8"))
+                return _GEO_TREE_CACHE
+            except Exception:
+                pass
+    _GEO_TREE_CACHE = {
+        "dep": {},
+        "dist_by_dep": {},
+        "city_by_dist": {},
+        "city_to_dist": {},
+        "dist_to_dep": {},
+    }
+    return _GEO_TREE_CACHE
+
 _GEO_REF_CACHE = None
 
 def _geo_name(kind: str, code: str) -> str:
@@ -835,11 +861,44 @@ def _validate_doc_extra(doc_type: str, extra_json: dict) -> list:
         elif not dep.isdigit():
             errors.append("Autofactura: departamento inválido (solo dígitos).")
 
+        dis = _afe_pick(afe, "cDisVen", "distritoVendedor", "distrito")
+        if not dis:
+            errors.append("Autofactura: falta distrito del vendedor (cDisVen).")
+        elif not dis.isdigit():
+            errors.append("Autofactura: distrito inválido (solo dígitos).")
+
         ciu = _afe_pick(afe, "cCiuVen", "ciudadVendedor", "ciudad")
         if not ciu:
             errors.append("Autofactura: falta ciudad del vendedor (cCiuVen).")
         elif not ciu.isdigit():
             errors.append("Autofactura: ciudad inválida (solo dígitos).")
+
+        geo_tree = _load_georef_tree()
+        if geo_tree:
+            dep_norm = _zfill_digits(dep, 2)
+            dis_norm = _zfill_digits(dis, 4)
+            ciu_norm = _zfill_digits(ciu, 5)
+            dep_map = geo_tree.get("dep") or {}
+            dist_to_dep = geo_tree.get("dist_to_dep") or {}
+            city_to_dist = geo_tree.get("city_to_dist") or {}
+
+            if dep_norm and dep_norm not in dep_map:
+                errors.append("Autofactura: departamento inválido (no existe en catálogo).")
+            if dis_norm and dis_norm not in dist_to_dep:
+                errors.append("Autofactura: distrito inválido (no existe en catálogo).")
+            if ciu_norm and ciu_norm not in city_to_dist:
+                errors.append("Autofactura: ciudad inválida (no existe en catálogo).")
+
+            expected_dist = city_to_dist.get(ciu_norm)
+            if expected_dist:
+                if not dis_norm:
+                    errors.append("Autofactura: falta distrito del vendedor (cDisVen) para la ciudad indicada.")
+                elif expected_dist != dis_norm:
+                    errors.append("Autofactura: ciudad no pertenece al distrito indicado.")
+
+            expected_dep = dist_to_dep.get(dis_norm)
+            if expected_dep and dep_norm and expected_dep != dep_norm:
+                errors.append("Autofactura: distrito no pertenece al departamento indicado.")
         # En AFE el documento asociado debe ser Constancia Electrónica (H002=3)
         assoc = extra_json.get("documentoAsociado") or {}
         tip = str(assoc.get("tipoDocumentoAsoc") or assoc.get("iTipDocAso") or "").strip()
@@ -1008,6 +1067,15 @@ def _zfill_digits(value: Optional[str], width: int) -> str:
     if not digits:
         return ""
     return digits.zfill(width)
+
+def _geo_display_code(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    digits = re.sub(r"\D", "", str(value).strip())
+    if not digits:
+        return ""
+    trimmed = digits.lstrip("0")
+    return trimmed or "0"
 
 def _extract_cdc_from_xml_path(xml_path: str) -> Optional[str]:
     if not xml_path:
@@ -4876,6 +4944,21 @@ def artifact_file(artifact_relpath: str):
         abort(404)
     return send_file(safe_path, as_attachment=False)
 
+@app.route("/data/georef_tree.json")
+def georef_tree():
+    path = (_repo_root() / "data" / "georef_tree.json").resolve()
+    if not path.exists() or not path.is_file():
+        legacy = (_repo_root() / "data" / "georef_tree_2025.json").resolve()
+        if legacy.exists() and legacy.is_file():
+            return send_file(legacy, mimetype="application/json", as_attachment=False)
+        abort(404)
+    return send_file(path, mimetype="application/json", as_attachment=False)
+
+
+@app.route("/data/georef_tree_2025.json")
+def georef_tree_2025():
+    return georef_tree()
+
 
 @app.route("/api/artifacts/<path:artifact_relpath>")
 def api_artifact_file(artifact_relpath: str):
@@ -5546,27 +5629,49 @@ def invoice_new():
         request.form.get("doc_type") if request.method == "POST" else request.args.get("doc_type")
     )
 
-    def _build_afe_cities() -> tuple[list[tuple[str, str]], dict]:
-        geo = _load_georef_maps()
-        city_map = geo.get("city") or {}
-        cities: list[tuple[str, str]] = []
-        for code, name in city_map.items():
-            code = str(code).strip()
-            if not code:
-                continue
-            label = str(name or "").strip()
-            if not label:
-                continue
-            if code == "1":
-                label = "Asunción"
-            cities.append((code, label))
-        cities.sort(key=lambda item: item[1].casefold())
-        return cities, city_map
+    geo_tree = _load_georef_tree()
+    dep_map = geo_tree.get("dep") or {}
+    afe_departamentos: list[tuple[str, str]] = []
+    for code, name in dep_map.items():
+        code = str(code or "").strip()
+        label = str(name or "").strip()
+        if not code or not label:
+            continue
+        afe_departamentos.append((_geo_display_code(code), label))
+    afe_departamentos.sort(key=lambda item: item[1].casefold())
 
-    cities, city_map = _build_afe_cities()
+    def _find_default_afe_geo(tree: dict) -> tuple[str, str, str]:
+        city_by_dist = tree.get("city_by_dist") or {}
+        dist_to_dep = tree.get("dist_to_dep") or {}
+        fallback: tuple[str, str, str] = ("", "", "")
+        for dist_code, cities in city_by_dist.items():
+            if not isinstance(cities, dict):
+                continue
+            for city_code, name in cities.items():
+                label = str(name or "").strip()
+                if not label:
+                    continue
+                norm = label.casefold()
+                dep_code = dist_to_dep.get(str(dist_code), "")
+                if norm == "asuncion":
+                    return (
+                        _geo_display_code(dep_code),
+                        _geo_display_code(dist_code),
+                        _geo_display_code(city_code),
+                    )
+                if "asuncion" in norm and not any(fallback):
+                    fallback = (
+                        _geo_display_code(dep_code),
+                        _geo_display_code(dist_code),
+                        _geo_display_code(city_code),
+                    )
+        return fallback
+
+    default_afe_dep = ""
+    default_afe_dist = ""
     default_afe_city = ""
-    if request.method == "GET" and selected_doc_type == "4" and "1" in city_map:
-        default_afe_city = "1"
+    if request.method == "GET" and selected_doc_type == "4":
+        default_afe_dep, default_afe_dist, default_afe_city = _find_default_afe_geo(geo_tree)
 
     def _form_value(name: str, default: str = "") -> str:
         if request.method == "POST":
@@ -5585,8 +5690,8 @@ def invoice_new():
         "afe_nombre": _form_value("afe_nombre", ""),
         "afe_direccion": _form_value("afe_direccion", ""),
         "afe_num_casa": _form_value("afe_num_casa", "0"),
-        "afe_departamento": _form_value("afe_departamento", ""),
-        "afe_distrito": _form_value("afe_distrito", ""),
+        "afe_departamento": _form_value("afe_departamento", default_afe_dep),
+        "afe_distrito": _form_value("afe_distrito", default_afe_dist),
         "afe_ciudad": _form_value("afe_ciudad", default_afe_city),
         # NC/ND
         "nc_doc_asoc_tipo": _form_value("nc_doc_asoc_tipo", "1"),
@@ -5632,6 +5737,26 @@ def invoice_new():
         "nre_chof_numero": _form_value("nre_chof_numero", ""),
         "nre_chof_dir": _form_value("nre_chof_dir", ""),
     }
+
+    def _geo_entries(raw_map: dict) -> list[tuple[str, str]]:
+        entries: list[tuple[str, str]] = []
+        for code, name in (raw_map or {}).items():
+            code_disp = _geo_display_code(code)
+            label = str(name or "").strip()
+            if not code_disp or not label:
+                continue
+            entries.append((code_disp, label))
+        entries.sort(key=lambda item: item[1].casefold())
+        return entries
+
+    afe_distritos: list[tuple[str, str]] = []
+    afe_ciudades: list[tuple[str, str]] = []
+    dep_sel = _zfill_digits(form_values.get("afe_departamento"), 2)
+    dist_sel = _zfill_digits(form_values.get("afe_distrito"), 4)
+    if dep_sel:
+        afe_distritos = _geo_entries((geo_tree.get("dist_by_dep") or {}).get(dep_sel, {}))
+    if dist_sel:
+        afe_ciudades = _geo_entries((geo_tree.get("city_by_dist") or {}).get(dist_sel, {}))
 
     def _build_items_form() -> list[dict]:
         if request.method == "POST":
@@ -5741,18 +5866,31 @@ def invoice_new():
                         <input class="form-control mono" name="afe_num_casa" data-afe-required="1" value="{{ form.get('afe_num_casa') or '0' }}">
                       </div>
                       <div class="col-md-3">
-                        <label class="form-label">Departamento (código)</label>
-                        <input class="form-control mono" name="afe_departamento" data-afe-required="1" placeholder="12" value="{{ form.get('afe_departamento') }}">
+                        <label class="form-label">Departamento</label>
+                        <select class="form-select" name="afe_departamento" id="afe-dep-select" data-afe-required="1"
+                                data-georef-url="{{ georef_url }}" data-initial="{{ form.get('afe_departamento') }}">
+                          <option value="" {% if not form.get('afe_departamento') %}selected{% endif %}>Elegí un departamento</option>
+                          {% for code, name in afe_departamentos %}
+                            <option value="{{code}}" {% if form.get("afe_departamento") == code %}selected{% endif %}>{{name}} ({{code}})</option>
+                          {% endfor %}
+                        </select>
                       </div>
                       <div class="col-md-3">
-                        <label class="form-label">Distrito (código)</label>
-                        <input class="form-control mono" name="afe_distrito" placeholder="(opcional)" value="{{ form.get('afe_distrito') }}">
+                        <label class="form-label">Distrito</label>
+                        <select class="form-select" name="afe_distrito" id="afe-dist-select" data-afe-required="1"
+                                data-initial="{{ form.get('afe_distrito') }}" disabled>
+                          <option value="" {% if not form.get('afe_distrito') %}selected{% endif %}>Elegí un distrito</option>
+                          {% for code, name in afe_distritos %}
+                            <option value="{{code}}" {% if form.get("afe_distrito") == code %}selected{% endif %}>{{name}} ({{code}})</option>
+                          {% endfor %}
+                        </select>
                       </div>
                       <div class="col-md-3">
-                        <label class="form-label">Ciudad (código)</label>
-                        <select class="form-select" name="afe_ciudad" data-afe-required="1">
-                          <option value="" {% if not form.get('afe_ciudad') %}selected{% endif %}>Seleccionar ciudad...</option>
-                          {% for code, name in cities %}
+                        <label class="form-label">Ciudad</label>
+                        <select class="form-select" name="afe_ciudad" id="afe-city-select" data-afe-required="1"
+                                data-initial="{{ form.get('afe_ciudad') }}" disabled>
+                          <option value="" {% if not form.get('afe_ciudad') %}selected{% endif %}>Elegí una ciudad</option>
+                          {% for code, name in afe_ciudades %}
                             <option value="{{code}}" {% if form.get("afe_ciudad") == code %}selected{% endif %}>{{name}} ({{code}})</option>
                           {% endfor %}
                         </select>
@@ -6186,6 +6324,10 @@ def invoice_new():
                     });
                   }
 
+                  if (isAfe) {
+                    syncGeoDisabled();
+                  }
+
                   toggleSection(ncndBlock, isNcNd);
                   if (ncndBlock) {
                     ncndBlock.querySelectorAll("[data-nc-required]").forEach((el) => {
@@ -6224,7 +6366,137 @@ def invoice_new():
                 if (ncDocAsocType) {
                   ncDocAsocType.addEventListener("change", toggleDocSections);
                 }
-                document.addEventListener("DOMContentLoaded", toggleDocSections);
+                document.addEventListener("DOMContentLoaded", function () {
+                  toggleDocSections();
+                  initAfeGeo();
+                });
+                const afeDepSelect = document.getElementById("afe-dep-select");
+                const afeDistSelect = document.getElementById("afe-dist-select");
+                const afeCitySelect = document.getElementById("afe-city-select");
+
+                function normalizeGeo(value, width) {
+                  if (!value) return "";
+                  const digits = String(value).replace(/\\D/g, "");
+                  if (!digits) return "";
+                  return digits.padStart(width, "0");
+                }
+
+                function displayGeo(value) {
+                  if (!value) return "";
+                  const digits = String(value).replace(/\\D/g, "");
+                  if (!digits) return "";
+                  const trimmed = digits.replace(/^0+/, "");
+                  return trimmed || "0";
+                }
+
+                function sortEntries(mapObj) {
+                  return Object.entries(mapObj || {}).sort((a, b) => {
+                    const an = String(a[1] || "").toLowerCase();
+                    const bn = String(b[1] || "").toLowerCase();
+                    if (an === bn) return String(a[0]).localeCompare(String(b[0]));
+                    return an.localeCompare(bn);
+                  });
+                }
+
+                function setSelectOptions(selectEl, entries, placeholder, selectedValue) {
+                  if (!selectEl) return;
+                  selectEl.innerHTML = "";
+                  const opt = document.createElement("option");
+                  opt.value = "";
+                  opt.textContent = placeholder;
+                  selectEl.appendChild(opt);
+                  entries.forEach(([code, name]) => {
+                    const option = document.createElement("option");
+                    const display = displayGeo(code);
+                    option.value = display;
+                    option.textContent = `${name} (${display})`;
+                    selectEl.appendChild(option);
+                  });
+                  if (selectedValue) {
+                    selectEl.value = selectedValue;
+                  }
+                }
+
+                function syncGeoDisabled() {
+                  if (!afeDepSelect || !afeDistSelect || !afeCitySelect) return;
+                  const depVal = (afeDepSelect.value || "").trim();
+                  const distVal = (afeDistSelect.value || "").trim();
+                  afeDistSelect.disabled = !depVal;
+                  afeCitySelect.disabled = !distVal;
+                }
+
+                async function initAfeGeo() {
+                  if (!afeDepSelect || !afeDistSelect || !afeCitySelect) return;
+                  const georefUrl = afeDepSelect.getAttribute("data-georef-url");
+                  if (!georefUrl) return;
+
+                  let geo;
+                  try {
+                    const resp = await fetch(georefUrl);
+                    if (!resp.ok) throw new Error("HTTP " + resp.status);
+                    geo = await resp.json();
+                  } catch (err) {
+                    console.warn("No se pudo cargar georef_tree.json", err);
+                    return;
+                  }
+
+                  const distByDep = geo.dist_by_dep || {};
+                  const cityByDist = geo.city_by_dist || {};
+                  const cityToDist = geo.city_to_dist || {};
+                  const distToDep = geo.dist_to_dep || {};
+
+                  let depVal = normalizeGeo(afeDepSelect.getAttribute("data-initial"), 2);
+                  let distVal = normalizeGeo(afeDistSelect.getAttribute("data-initial"), 4);
+                  let cityVal = normalizeGeo(afeCitySelect.getAttribute("data-initial"), 5);
+
+                  if (!distVal && cityVal) {
+                    distVal = normalizeGeo(cityToDist[cityVal], 4);
+                  }
+                  if (!depVal && distVal) {
+                    depVal = normalizeGeo(distToDep[distVal], 2);
+                  }
+
+                  const depDisplay = displayGeo(depVal);
+                  const distDisplay = displayGeo(distVal);
+                  const cityDisplay = displayGeo(cityVal);
+
+                  if (depDisplay) {
+                    afeDepSelect.value = depDisplay;
+                  }
+
+                  function updateCities(selectedCity) {
+                    const distCode = normalizeGeo(afeDistSelect.value, 4);
+                    const cityEntries = sortEntries(cityByDist[distCode] || {});
+                    setSelectOptions(afeCitySelect, cityEntries, "Elegí una ciudad", selectedCity);
+                    afeCitySelect.disabled = !distCode;
+                  }
+
+                  function updateDistricts(selectedDist, selectedCity) {
+                    const depCode = normalizeGeo(afeDepSelect.value, 2);
+                    const distEntries = sortEntries(distByDep[depCode] || {});
+                    setSelectOptions(afeDistSelect, distEntries, "Elegí un distrito", selectedDist);
+                    afeDistSelect.disabled = !depCode;
+                    if (selectedDist) {
+                      afeDistSelect.value = selectedDist;
+                    }
+                    updateCities(selectedCity);
+                    if (selectedCity) {
+                      afeCitySelect.value = selectedCity;
+                    }
+                  }
+
+                  updateDistricts(distDisplay, cityDisplay);
+
+                  afeDepSelect.addEventListener("change", function () {
+                    updateDistricts(\"\", \"\");
+                  });
+                  afeDistSelect.addEventListener("change", function () {
+                    updateCities(\"\");
+                  });
+
+                  syncGeoDisabled();
+                }
+
                 toggleDocSections();
 
                 const container = document.getElementById("items-container");
@@ -6407,7 +6679,10 @@ def invoice_new():
             veh_tipos=VEH_TIPO_MAP,
             doc_impreso_types=DOC_IMPRESO_TYPE_MAP,
             form=form_values,
-            cities=cities,
+            afe_departamentos=afe_departamentos,
+            afe_distritos=afe_distritos,
+            afe_ciudades=afe_ciudades,
+            georef_url=url_for("georef_tree"),
             items=items_form,
             error=error,
         )

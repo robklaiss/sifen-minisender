@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import json
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -37,8 +38,9 @@ def test_afe_new_invoice_without_customer_and_builds_vendor(app_ctx):
         "afe_nombre": "Vendedor Test",
         "afe_direccion": "Calle 1",
         "afe_num_casa": "0",
-        "afe_departamento": "12",
-        "afe_ciudad": "6106",
+        "afe_departamento": "1",
+        "afe_distrito": "1",
+        "afe_ciudad": "1",
     }
 
     resp = client.post("/invoice/new", data=payload, follow_redirects=False)
@@ -105,6 +107,27 @@ def test_afe_new_invoice_city_select(app_ctx):
     assert resp.status_code == 200
 
     html = resp.get_data(as_text=True)
+    for field in ("afe_departamento", "afe_distrito", "afe_ciudad"):
+        assert re.search(rf'<select[^>]*name="{field}"[^>]*>', html) is not None
+
     match = re.search(r'<select[^>]*name="afe_ciudad"[^>]*>.*?</select>', html, re.S)
     assert match is not None
-    assert 'value="1"' in match.group(0)
+    select_html = match.group(0)
+    assert "disabled" in select_html
+    assert re.search(r'value="1"[^>]*>[^<]*Asunc', select_html, re.I) is not None
+
+
+def test_georef_tree_contains_asuncion():
+    tree = json.loads(Path("data/georef_tree.json").read_text(encoding="utf-8"))
+    assert {"dep", "dist_by_dep", "city_by_dist", "city_to_dist", "dist_to_dep"} <= set(tree.keys())
+    city_found = False
+    for cities in tree.get("city_by_dist", {}).values():
+        if not isinstance(cities, dict):
+            continue
+        for name in cities.values():
+            if "ASUNCION" in str(name).upper():
+                city_found = True
+                break
+        if city_found:
+            break
+    assert city_found

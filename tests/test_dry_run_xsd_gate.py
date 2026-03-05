@@ -181,3 +181,26 @@ def test_validate_de_xml_against_xsd_fails_if_missing_iModTrans(app_ctx):
     assert ok is False
     assert errors
     assert any("iModTrans" in err for err in errors)
+
+
+def test_smoke_dry_run_afe_includes_distrito(app_ctx, monkeypatch):
+    monkeypatch.setattr(webapp, "sign_de_with_p12", _signed_xml_stub)
+
+    client = webapp.app.test_client()
+    resp = client.post(
+        "/api/smoke",
+        json={
+            "do_consult_ruc": False,
+            "do_consult_cdc": False,
+            "do_consult_lote": False,
+            "persist": False,
+        },
+    )
+    data = resp.get_json() or {}
+
+    assert resp.status_code == 200
+    dry_run = data.get("dry_run") or {}
+    assert "Autofactura electrónica" in dry_run
+    afe = dry_run.get("Autofactura electrónica") or {}
+    assert afe.get("ok") is True
+    assert not afe.get("error")

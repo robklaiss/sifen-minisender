@@ -761,6 +761,39 @@ def _load_georef_tree() -> dict:
     }
     return _GEO_TREE_CACHE
 
+def _find_default_afe_geo(tree: dict) -> tuple[str, str, str]:
+    city_by_dist = tree.get("city_by_dist") or {}
+    dist_to_dep = tree.get("dist_to_dep") or {}
+    fallback: tuple[str, str, str] = ("", "", "")
+    for dist_code, cities in city_by_dist.items():
+        if not isinstance(cities, dict):
+            continue
+        for city_code, name in cities.items():
+            label = str(name or "").strip()
+            if not label:
+                continue
+            norm = label.casefold()
+            dep_code = dist_to_dep.get(str(dist_code), "")
+            if norm == "asuncion (distrito)":
+                return (
+                    _geo_display_code(dep_code),
+                    _geo_display_code(dist_code),
+                    _geo_display_code(city_code),
+                )
+            if norm == "asuncion":
+                return (
+                    _geo_display_code(dep_code),
+                    _geo_display_code(dist_code),
+                    _geo_display_code(city_code),
+                )
+            if "asuncion" in norm and not any(fallback):
+                fallback = (
+                    _geo_display_code(dep_code),
+                    _geo_display_code(dist_code),
+                    _geo_display_code(city_code),
+                )
+    return fallback
+
 _GEO_REF_CACHE = None
 
 def _geo_name(kind: str, code: str) -> str:
@@ -4186,8 +4219,14 @@ def _diagnostics_dry_run() -> dict:
                 extra["autofactura"].setdefault("nombre", "Vendedor")
                 extra["autofactura"].setdefault("direccion", "Direccion")
                 extra["autofactura"].setdefault("numCasa", "0")
-                extra["autofactura"].setdefault("departamentoVendedor", "12")
-                extra["autofactura"].setdefault("ciudadVendedor", "6106")
+                geo_tree = _load_georef_tree()
+                dep_code, dist_code, city_code = _find_default_afe_geo(geo_tree)
+                if dep_code:
+                    extra["autofactura"]["departamentoVendedor"] = dep_code
+                if dist_code:
+                    extra["autofactura"]["distritoVendedor"] = dist_code
+                if city_code:
+                    extra["autofactura"]["ciudadVendedor"] = city_code
             if doc_type in ("5", "6"):
                 extra["documentoAsociado"] = {
                     "tipoDocumentoAsoc": "1",
@@ -5680,39 +5719,6 @@ def invoice_new():
         afe_departamentos.append((_geo_display_code(code), label))
     afe_departamentos.sort(key=lambda item: item[1].casefold())
     geo_departamentos = afe_departamentos
-
-    def _find_default_afe_geo(tree: dict) -> tuple[str, str, str]:
-        city_by_dist = tree.get("city_by_dist") or {}
-        dist_to_dep = tree.get("dist_to_dep") or {}
-        fallback: tuple[str, str, str] = ("", "", "")
-        for dist_code, cities in city_by_dist.items():
-            if not isinstance(cities, dict):
-                continue
-            for city_code, name in cities.items():
-                label = str(name or "").strip()
-                if not label:
-                    continue
-                norm = label.casefold()
-                dep_code = dist_to_dep.get(str(dist_code), "")
-                if norm == "asuncion (distrito)":
-                    return (
-                        _geo_display_code(dep_code),
-                        _geo_display_code(dist_code),
-                        _geo_display_code(city_code),
-                    )
-                if norm == "asuncion":
-                    return (
-                        _geo_display_code(dep_code),
-                        _geo_display_code(dist_code),
-                        _geo_display_code(city_code),
-                    )
-                if "asuncion" in norm and not any(fallback):
-                    fallback = (
-                        _geo_display_code(dep_code),
-                        _geo_display_code(dist_code),
-                        _geo_display_code(city_code),
-                    )
-        return fallback
 
     default_afe_dep = ""
     default_afe_dist = ""

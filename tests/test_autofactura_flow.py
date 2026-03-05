@@ -88,3 +88,10 @@ def test_afe_new_invoice_without_customer_and_builds_vendor(app_ctx):
         assert gcam is not None
         assert gcam.findtext("s:dNumIDVen", default="", namespaces=NS) == "A12345"
         assert gcam.findtext("s:dNomVen", default="", namespaces=NS) == "Vendedor Test"
+
+        gdtip = root.find(".//s:gDtipDE", NS)
+        assert gdtip is not None
+        tags = [el.tag.split("}")[-1] for el in list(gdtip)]
+        assert "gCamAE" in tags
+        assert "gCamItem" in tags
+        assert tags.index("gCamItem") < tags.index("gCamAE")

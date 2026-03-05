@@ -1653,31 +1653,26 @@ def _build_invoice_xml_from_template(
         if gopede is not None:
             _ensure_child_ns(gopede, "dInfoFisc", ns_uri).text = str(info_fisc)
 
+    afe_payload = None
     # gCamAE (Autofactura)
     if doc_type == "4":
         afe = _afe_vendor_from_extra(extra_json)
-        gcam = _ensure_child_ns(gdtip, "gCamAE", ns_uri)
+        _remove_child_ns(gdtip, "gCamAE", ns_uri)
         i_nat = _afe_pick(afe, "iNatVen", "naturaleza", "tipo_vendedor")
         if i_nat not in AFE_NAT_MAP:
             raise RuntimeError("Autofactura: falta tipo_vendedor (iNatVen 1/2).")
-        _ensure_child_ns(gcam, "iNatVen", ns_uri).text = i_nat
-        _ensure_child_ns(gcam, "dDesNatVen", ns_uri).text = AFE_NAT_MAP.get(i_nat, "No contribuyente")
 
         i_tip_id = _afe_pick(afe, "iTipIDVen", "tipoDocumento", "tipo_doc")
         if i_tip_id not in AFE_ID_MAP:
             raise RuntimeError("Autofactura: falta tipo_doc_identidad (iTipIDVen).")
-        _ensure_child_ns(gcam, "iTipIDVen", ns_uri).text = i_tip_id
-        _ensure_child_ns(gcam, "dDTipIDVen", ns_uri).text = AFE_ID_MAP.get(i_tip_id, "Cédula paraguaya")
 
         num_id = _afe_pick(afe, "dNumIDVen", "documento", "nro_doc", "nro_doc_identidad")
         if not num_id:
             raise RuntimeError("Autofactura: falta nro_doc_identidad (dNumIDVen).")
-        _ensure_child_ns(gcam, "dNumIDVen", ns_uri).text = num_id
 
         nombre = _afe_pick(afe, "dNomVen", "nombre", "nombre_apellido_o_razon")
         if not nombre:
             raise RuntimeError("Autofactura: falta nombre del vendedor (dNomVen).")
-        _ensure_child_ns(gcam, "dNomVen", ns_uri).text = nombre
 
         def _emval(path: str) -> str:
             el = root.find(path, ns)
@@ -1689,52 +1684,52 @@ def _build_invoice_xml_from_template(
         num_cas_ven = _afe_pick(afe, "dNumCasVen", "numCasa")
         if not num_cas_ven:
             raise RuntimeError("Autofactura: falta número de casa (dNumCasVen).")
-        _ensure_child_ns(gcam, "dDirVen", ns_uri).text = dir_ven
-        _ensure_child_ns(gcam, "dNumCasVen", ns_uri).text = num_cas_ven
 
         dep_ven = _afe_pick(afe, "cDepVen", "departamentoVendedor", "departamento")
         if not dep_ven:
             raise RuntimeError("Autofactura: falta departamento del vendedor (cDepVen).")
         des_dep_ven = _afe_pick(afe, "dDesDepVen") or _emval(".//s:gEmis/s:dDesDepEmi")
-        _ensure_child_ns(gcam, "cDepVen", ns_uri).text = dep_ven
-        if des_dep_ven:
-            _ensure_child_ns(gcam, "dDesDepVen", ns_uri).text = des_dep_ven
 
         dis_ven = _afe_pick(afe, "cDisVen", "distritoVendedor", "distrito")
-        if dis_ven:
-            _ensure_child_ns(gcam, "cDisVen", ns_uri).text = dis_ven
-            des_dis = _afe_pick(afe, "dDesDisVen")
-            if des_dis:
-                _ensure_child_ns(gcam, "dDesDisVen", ns_uri).text = des_dis
+        des_dis = _afe_pick(afe, "dDesDisVen") if dis_ven else None
 
         ciu_ven = _afe_pick(afe, "cCiuVen", "ciudadVendedor", "ciudad")
         if not ciu_ven:
             raise RuntimeError("Autofactura: falta ciudad del vendedor (cCiuVen).")
         des_ciu_ven = _afe_pick(afe, "dDesCiuVen") or _emval(".//s:gEmis/s:dDesCiuEmi")
-        _ensure_child_ns(gcam, "cCiuVen", ns_uri).text = ciu_ven
-        if des_ciu_ven:
-            _ensure_child_ns(gcam, "dDesCiuVen", ns_uri).text = des_ciu_ven
 
         dir_prov = _afe_pick(afe, "dDirProv", "direccionProv") or dir_ven
         dep_prov = _afe_pick(afe, "cDepProv", "departamentoProv") or dep_ven
         des_dep_prov = _afe_pick(afe, "dDesDepProv") or des_dep_ven
         ciu_prov = _afe_pick(afe, "cCiuProv", "ciudadProv") or ciu_ven
         des_ciu_prov = _afe_pick(afe, "dDesCiuProv") or des_ciu_ven
-        _ensure_child_ns(gcam, "dDirProv", ns_uri).text = dir_prov
-        _ensure_child_ns(gcam, "cDepProv", ns_uri).text = dep_prov
-        if des_dep_prov:
-            _ensure_child_ns(gcam, "dDesDepProv", ns_uri).text = des_dep_prov
 
         dis_prov = _afe_pick(afe, "cDisProv", "distritoProv")
-        if dis_prov:
-            _ensure_child_ns(gcam, "cDisProv", ns_uri).text = dis_prov
-            des_dis_p = _afe_pick(afe, "dDesDisProv")
-            if des_dis_p:
-                _ensure_child_ns(gcam, "dDesDisProv", ns_uri).text = des_dis_p
+        des_dis_p = _afe_pick(afe, "dDesDisProv") if dis_prov else None
 
-        _ensure_child_ns(gcam, "cCiuProv", ns_uri).text = ciu_prov
-        if des_ciu_prov:
-            _ensure_child_ns(gcam, "dDesCiuProv", ns_uri).text = des_ciu_prov
+        afe_payload = {
+            "iNatVen": i_nat,
+            "dDesNatVen": AFE_NAT_MAP.get(i_nat, "No contribuyente"),
+            "iTipIDVen": i_tip_id,
+            "dDTipIDVen": AFE_ID_MAP.get(i_tip_id, "Cédula paraguaya"),
+            "dNumIDVen": num_id,
+            "dNomVen": nombre,
+            "dDirVen": dir_ven,
+            "dNumCasVen": num_cas_ven,
+            "cDepVen": dep_ven,
+            "dDesDepVen": des_dep_ven,
+            "cDisVen": dis_ven,
+            "dDesDisVen": des_dis,
+            "cCiuVen": ciu_ven,
+            "dDesCiuVen": des_ciu_ven,
+            "dDirProv": dir_prov,
+            "cDepProv": dep_prov,
+            "dDesDepProv": des_dep_prov,
+            "cDisProv": dis_prov,
+            "dDesDisProv": des_dis_p,
+            "cCiuProv": ciu_prov,
+            "dDesCiuProv": des_ciu_prov,
+        }
 
     # gCamNCDE (Nota de crédito/débito)
     if doc_type in ("5", "6"):
@@ -1898,6 +1893,39 @@ def _build_invoice_xml_from_template(
                 "total": float(line_total),
             }
         )
+
+    if doc_type == "4" and afe_payload:
+        gcam = _ensure_child_ns(gdtip, "gCamAE", ns_uri)
+        for tag in (
+            "iNatVen",
+            "dDesNatVen",
+            "iTipIDVen",
+            "dDTipIDVen",
+            "dNumIDVen",
+            "dNomVen",
+            "dDirVen",
+            "dNumCasVen",
+            "cDepVen",
+            "cCiuVen",
+            "dDirProv",
+            "cDepProv",
+            "cCiuProv",
+        ):
+            _ensure_child_ns(gcam, tag, ns_uri).text = afe_payload.get(tag, "")
+
+        for tag in (
+            "dDesDepVen",
+            "cDisVen",
+            "dDesDisVen",
+            "dDesCiuVen",
+            "dDesDepProv",
+            "cDisProv",
+            "dDesDisProv",
+            "dDesCiuProv",
+        ):
+            val = afe_payload.get(tag)
+            if val:
+                _ensure_child_ns(gcam, tag, ns_uri).text = val
 
     iva_total = (iva5 + iva10).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
     base_total = (base5 + base10).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)

@@ -2044,26 +2044,35 @@ def _build_invoice_xml_from_template(
             "dDirVen",
             "dNumCasVen",
             "cDepVen",
-            "cCiuVen",
-            "dDirProv",
-            "cDepProv",
-            "cCiuProv",
-        ):
-            _ensure_child_ns(gcam, tag, ns_uri).text = afe_payload.get(tag, "")
-
-        for tag in (
             "dDesDepVen",
             "cDisVen",
             "dDesDisVen",
+            "cCiuVen",
             "dDesCiuVen",
+            "dDirProv",
+            "cDepProv",
             "dDesDepProv",
             "cDisProv",
             "dDesDisProv",
+            "cCiuProv",
             "dDesCiuProv",
         ):
-            val = afe_payload.get(tag)
+            val = afe_payload.get(tag, "")
             if val:
                 _ensure_child_ns(gcam, tag, ns_uri).text = val
+
+        try:
+            kids = list(gdtip)
+            items = [x for x in kids if (getattr(x, "tag", "").split("}", 1)[1] if "}" in getattr(x, "tag", "") else getattr(x, "tag", "")) == "gCamItem"]
+            if items:
+                first_item = items[0]
+                cur = list(gdtip)
+                if gcam in cur and cur.index(gcam) > cur.index(first_item):
+                    gdtip.remove(gcam)
+                    cur2 = list(gdtip)
+                    gdtip.insert(cur2.index(first_item), gcam)
+        except Exception:
+            pass
 
     iva_total = (iva5 + iva10).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)
     base_total = (base5 + base10).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)

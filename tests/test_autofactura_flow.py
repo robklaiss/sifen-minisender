@@ -97,7 +97,7 @@ def test_afe_new_invoice_without_customer_and_builds_vendor(app_ctx):
         tags = [el.tag.split("}")[-1] for el in list(gdtip)]
         assert "gCamAE" in tags
         assert "gCamItem" in tags
-        assert tags.index("gCamAE") < tags.index("gCamItem")
+        assert tags.index("gCamItem") < tags.index("gCamAE")
 
 
 def test_afe_new_invoice_city_select(app_ctx):

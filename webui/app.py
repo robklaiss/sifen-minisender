@@ -1826,24 +1826,24 @@ def _build_invoice_xml_from_template(
         dep_ven = _afe_pick(afe, "cDepVen", "departamentoVendedor", "departamento")
         if not dep_ven:
             raise RuntimeError("Autofactura: falta departamento del vendedor (cDepVen).")
-        des_dep_ven = _afe_pick(afe, "dDesDepVen") or _emval(".//s:gEmis/s:dDesDepEmi")
+        des_dep_ven = None
 
         dis_ven = _afe_pick(afe, "cDisVen", "distritoVendedor", "distrito")
-        des_dis = _afe_pick(afe, "dDesDisVen") if dis_ven else None
+        des_dis = None
 
         ciu_ven = _afe_pick(afe, "cCiuVen", "ciudadVendedor", "ciudad")
         if not ciu_ven:
             raise RuntimeError("Autofactura: falta ciudad del vendedor (cCiuVen).")
-        des_ciu_ven = _afe_pick(afe, "dDesCiuVen") or _emval(".//s:gEmis/s:dDesCiuEmi")
+        des_ciu_ven = None
 
         dir_prov = _afe_pick(afe, "dDirProv", "direccionProv") or dir_ven
         dep_prov = _afe_pick(afe, "cDepProv", "departamentoProv") or dep_ven
-        des_dep_prov = _afe_pick(afe, "dDesDepProv") or des_dep_ven
+        des_dep_prov = None
         ciu_prov = _afe_pick(afe, "cCiuProv", "ciudadProv") or ciu_ven
-        des_ciu_prov = _afe_pick(afe, "dDesCiuProv") or des_ciu_ven
+        des_ciu_prov = None
 
         dis_prov = _afe_pick(afe, "cDisProv", "distritoProv")
-        des_dis_p = _afe_pick(afe, "dDesDisProv") if dis_prov else None
+        des_dis_p = None
 
         afe_payload = {
             "iNatVen": i_nat,
@@ -2065,12 +2065,12 @@ def _build_invoice_xml_from_template(
             kids = list(gdtip)
             items = [x for x in kids if (getattr(x, "tag", "").split("}", 1)[1] if "}" in getattr(x, "tag", "") else getattr(x, "tag", "")) == "gCamItem"]
             if items:
-                first_item = items[0]
+                last_item = items[-1]
                 cur = list(gdtip)
-                if gcam in cur and cur.index(gcam) > cur.index(first_item):
+                if gcam in cur and cur.index(gcam) < cur.index(last_item):
                     gdtip.remove(gcam)
                     cur2 = list(gdtip)
-                    gdtip.insert(cur2.index(first_item), gcam)
+                    gdtip.insert(cur2.index(last_item) + 1, gcam)
         except Exception:
             pass
 

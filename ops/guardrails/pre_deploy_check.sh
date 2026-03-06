@@ -42,13 +42,13 @@ if [[ ! -s "${UPLOAD_LOGO}" ]]; then
   exit 11
 fi
 
-if ! docker compose exec -T web sh -lc 'test -s /app/data/webui.db'; then
-  echo "ERROR: Container cannot see non-empty /app/data/webui.db. Verify volume mounts and file permissions (do not auto-fix here)." >&2
+if ! docker compose exec -T web sh -lc 'test -s /data/webui.db'; then
+  echo "ERROR: Container cannot see non-empty /data/webui.db. Verify volume mounts and file permissions (do not auto-fix here)." >&2
   exit 12
 fi
 
-if ! docker compose exec -T web sh -lc 'test -s /app/data/uploads/issuer-logo.jpg'; then
-  echo "ERROR: Container cannot see non-empty /app/data/uploads/issuer-logo.jpg. Verify volume mounts and file permissions (do not auto-fix here)." >&2
+if ! docker compose exec -T web sh -lc 'test -s /data/uploads/issuer-logo.jpg'; then
+  echo "ERROR: Container cannot see non-empty /data/uploads/issuer-logo.jpg. Verify volume mounts and file permissions (do not auto-fix here)." >&2
   exit 13
 fi
 

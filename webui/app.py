@@ -742,6 +742,8 @@ def _load_georef_tree() -> dict:
     if _GEO_TREE_CACHE is not None:
         return _GEO_TREE_CACHE
     candidates = [
+        Path("/data/georef_tree.json"),
+        Path("/data/georef_tree_2025.json"),
         _repo_root() / "data" / "georef_tree.json",
         _repo_root() / "data" / "georef_tree_2025.json",
     ]
@@ -5025,13 +5027,16 @@ def artifact_file(artifact_relpath: str):
 
 @app.route("/data/georef_tree.json")
 def georef_tree():
-    path = (_repo_root() / "data" / "georef_tree.json").resolve()
-    if not path.exists() or not path.is_file():
-        legacy = (_repo_root() / "data" / "georef_tree_2025.json").resolve()
-        if legacy.exists() and legacy.is_file():
-            return send_file(legacy, mimetype="application/json", as_attachment=False)
-        abort(404)
-    return send_file(path, mimetype="application/json", as_attachment=False)
+    candidates = [
+        Path("/data/georef_tree.json"),
+        Path("/data/georef_tree_2025.json"),
+        (_repo_root() / "data" / "georef_tree.json").resolve(),
+        (_repo_root() / "data" / "georef_tree_2025.json").resolve(),
+    ]
+    for path in candidates:
+        if path.exists() and path.is_file():
+            return send_file(path, mimetype="application/json", as_attachment=False)
+    abort(404)
 
 
 @app.route("/data/georef_tree_2025.json")

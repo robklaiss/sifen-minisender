@@ -117,6 +117,28 @@ def test_builds_all_doc_types_and_cdc_changes(app_ctx):
         assert de.attrib.get("Id") == b1["cdc"]
 
 
+
+def test_autofactura_orders_gcamitem_before_gcamae_and_keeps_geo_codes(app_ctx):
+    webapp.set_setting("timbrado_num", "18578288")
+    webapp.set_setting("timbrado_fe_ini", "2026-01-14")
+
+    out = _build("4", "0000013", datetime(2026, 2, 10, 8, 0, 0))
+    root = _parse(out["xml_bytes"])
+
+    gdtip = root.find(".//s:gDtipDE", NS)
+    assert gdtip is not None
+
+    tags = [el.tag.split("}")[-1] for el in list(gdtip)]
+    assert "gCamItem" in tags
+    assert "gCamAE" in tags
+    assert tags.index("gCamItem") < tags.index("gCamAE")
+
+    gcam = root.find(".//s:gDtipDE/s:gCamAE", NS)
+    assert gcam is not None
+
+    assert (gcam.findtext("s:cDepVen", default="", namespaces=NS) or "").strip() == "12"
+    assert (gcam.findtext("s:cCiuVen", default="", namespaces=NS) or "").strip() == "6106"
+
 def test_timbrado_override_and_feinit_validation(app_ctx):
     webapp.set_setting("timbrado_num", "18578288")
     webapp.set_setting("timbrado_fe_ini", "2026-01-14")

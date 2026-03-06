@@ -7028,6 +7028,13 @@ def invoice_new():
         con.commit()
         recompute_invoice_totals(invoice_id)
 
+        confirm_emit = (request.form.get("confirm_emit") or "").strip().upper()
+        if confirm_emit == "YES":
+            env = (request.form.get("env") or get_setting("default_env", "prod") or "prod").strip().lower()
+            if env not in ("test", "prod"):
+                abort(400, "env inválido (usar test|prod)")
+            return _emit_invoice_existing_flow(invoice_id, env)
+
         return redirect(url_for("invoice_detail", invoice_id=invoice_id))
     return _render_form()
 
@@ -7942,6 +7949,10 @@ def invoice_emit(invoice_id: int):
     confirm = (request.form.get("confirm_emit") or "").strip().upper()
     if env == "prod" and confirm != "YES":
         abort(400, "Confirmación requerida para PROD (marcá la casilla).")
+    return _emit_invoice_existing_flow(invoice_id, env)
+
+
+def _emit_invoice_existing_flow(invoice_id: int, env: str):
     if env == "prod":
         ok, _detail = _sifen_preflight_ok()
         if not ok:

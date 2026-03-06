@@ -2,11 +2,3 @@ services:
   web:
     environment:
       SIFEN_ENV: prod
-    volumes:
-      - ./data:/app/data:ro
-
-  cli:
-    environment:
-      SIFEN_ENV: prod
-    volumes:
-      - ./data:/app/data:ro

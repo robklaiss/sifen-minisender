@@ -1826,24 +1826,24 @@ def _build_invoice_xml_from_template(
         dep_ven = _afe_pick(afe, "cDepVen", "departamentoVendedor", "departamento")
         if not dep_ven:
             raise RuntimeError("Autofactura: falta departamento del vendedor (cDepVen).")
-        des_dep_ven = None
+        des_dep_ven = _afe_pick(afe, "dDesDepVen") or _geo_name("dep", dep_ven) or _emval(".//s:gEmis/s:dDesDepEmi")
 
         dis_ven = _afe_pick(afe, "cDisVen", "distritoVendedor", "distrito")
-        des_dis = None
+        des_dis = _afe_pick(afe, "dDesDisVen") or (_geo_name("dist", dis_ven) if dis_ven else None)
 
         ciu_ven = _afe_pick(afe, "cCiuVen", "ciudadVendedor", "ciudad")
         if not ciu_ven:
             raise RuntimeError("Autofactura: falta ciudad del vendedor (cCiuVen).")
-        des_ciu_ven = None
+        des_ciu_ven = _afe_pick(afe, "dDesCiuVen") or _geo_name("city", ciu_ven) or _emval(".//s:gEmis/s:dDesCiuEmi")
 
         dir_prov = _afe_pick(afe, "dDirProv", "direccionProv") or dir_ven
         dep_prov = _afe_pick(afe, "cDepProv", "departamentoProv") or dep_ven
-        des_dep_prov = None
+        des_dep_prov = _afe_pick(afe, "dDesDepProv") or _geo_name("dep", dep_prov) or des_dep_ven
         ciu_prov = _afe_pick(afe, "cCiuProv", "ciudadProv") or ciu_ven
-        des_ciu_prov = None
+        des_ciu_prov = _afe_pick(afe, "dDesCiuProv") or _geo_name("city", ciu_prov) or des_ciu_ven
 
         dis_prov = _afe_pick(afe, "cDisProv", "distritoProv")
-        des_dis_p = None
+        des_dis_p = _afe_pick(afe, "dDesDisProv") or (_geo_name("dist", dis_prov) if dis_prov else None)
 
         afe_payload = {
             "iNatVen": i_nat,
@@ -2062,15 +2062,73 @@ def _build_invoice_xml_from_template(
                 _ensure_child_ns(gcam, tag, ns_uri).text = val
 
         try:
+            # Asegurar orden XSD en gDtipDE: gCamNRE, gCamCond, gCamItem, gTransp
             kids = list(gdtip)
-            items = [x for x in kids if (getattr(x, "tag", "").split("}", 1)[1] if "}" in getattr(x, "tag", "") else getattr(x, "tag", "")) == "gCamItem"]
-            if items:
-                last_item = items[-1]
+
+            def _loc(t): return t.split("}", 1)[1] if "}" in t else t
+
+            def _find_one(name):
+                return next((x for x in list(gdtip) if _loc(getattr(x, "tag", "")) == name), None)
+
+            def _find_all(name):
+                return [x for x in list(gdtip) if _loc(getattr(x, "tag", "")) == name]
+
+            def _move_before(node, ref):
+                if node is None or ref is None:
+                    return
                 cur = list(gdtip)
-                if gcam in cur and cur.index(gcam) < cur.index(last_item):
-                    gdtip.remove(gcam)
-                    cur2 = list(gdtip)
-                    gdtip.insert(cur2.index(last_item) + 1, gcam)
+                if node not in cur or ref not in cur:
+                    return
+                if cur.index(node) < cur.index(ref):
+                    return
+                gdtip.remove(node)
+                cur2 = list(gdtip)
+                gdtip.insert(cur2.index(ref), node)
+
+            def _move_after(node, ref):
+                if node is None or ref is None:
+                    return
+                cur = list(gdtip)
+                if node not in cur or ref not in cur:
+                    return
+                if cur.index(node) > cur.index(ref):
+                    return
+                gdtip.remove(node)
+                cur2 = list(gdtip)
+                gdtip.insert(cur2.index(ref) + 1, node)
+
+            nre   = _find_one("gCamNRE")
+            cond  = _find_one("gCamCond")
+            tr    = _find_one("gTransp")
+            items = _find_all("gCamItem")
+
+            # 1) gCamNRE debe ir antes que gCamCond (si existen ambos)
+            _move_before(nre, cond)
+
+            # 2) gCamItem debe ir después de gCamCond (si existe), sino después de gCamNRE
+            anchor = cond or nre
+            if anchor is not None and items:
+                for it in items:
+                    if it in list(gdtip):
+                        gdtip.remove(it)
+                cur = list(gdtip)
+                pos = cur.index(anchor) + 1
+                for it in items:
+                    gdtip.insert(pos, it)
+                    pos += 1
+
+            # 3) gTransp debe ir después del último gCamItem (si hay items)
+            if tr is not None:
+                cur = list(gdtip)
+                items_now = [x for x in cur if _loc(getattr(x, "tag", "")) == "gCamItem"]
+                if items_now:
+                    last_item = items_now[-1]
+                    if cur.index(tr) < cur.index(last_item):
+                        gdtip.remove(tr)
+                        cur2 = list(gdtip)
+                        gdtip.insert(cur2.index(last_item) + 1, tr)
+                else:
+                    _move_after(tr, cond or nre)
         except Exception:
             pass
 

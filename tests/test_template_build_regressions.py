@@ -118,7 +118,7 @@ def test_builds_all_doc_types_and_cdc_changes(app_ctx):
 
 
 
-def test_autofactura_orders_gcamitem_before_gcamae_and_keeps_geo_codes(app_ctx):
+def test_autofactura_orders_gcamae_before_cond_and_items_and_keeps_geo_codes(app_ctx):
     webapp.set_setting("timbrado_num", "18578288")
     webapp.set_setting("timbrado_fe_ini", "2026-01-14")
 
@@ -129,9 +129,10 @@ def test_autofactura_orders_gcamitem_before_gcamae_and_keeps_geo_codes(app_ctx):
     assert gdtip is not None
 
     tags = [el.tag.split("}")[-1] for el in list(gdtip)]
-    assert "gCamItem" in tags
     assert "gCamAE" in tags
-    assert tags.index("gCamItem") < tags.index("gCamAE")
+    assert "gCamCond" in tags
+    assert "gCamItem" in tags
+    assert tags.index("gCamAE") < tags.index("gCamCond") < tags.index("gCamItem")
 
     gcam = root.find(".//s:gDtipDE/s:gCamAE", NS)
     assert gcam is not None

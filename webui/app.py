@@ -2062,73 +2062,19 @@ def _build_invoice_xml_from_template(
                 _ensure_child_ns(gcam, tag, ns_uri).text = val
 
         try:
-            # Asegurar orden XSD en gDtipDE: gCamNRE, gCamCond, gCamItem, gTransp
-            kids = list(gdtip)
+            # AFE XSD: gCamAE debe ir antes de gCamNCDE/gCamNRE/gCamCond/gCamItem/gCamEsp/gTransp.
+            def _loc(t):
+                return t.split("}", 1)[1] if "}" in t else t
 
-            def _loc(t): return t.split("}", 1)[1] if "}" in t else t
-
-            def _find_one(name):
-                return next((x for x in list(gdtip) if _loc(getattr(x, "tag", "")) == name), None)
-
-            def _find_all(name):
-                return [x for x in list(gdtip) if _loc(getattr(x, "tag", "")) == name]
-
-            def _move_before(node, ref):
-                if node is None or ref is None:
-                    return
+            later_names = {"gCamNCDE", "gCamNRE", "gCamCond", "gCamItem", "gCamEsp", "gTransp"}
+            later_nodes = [x for x in list(gdtip) if x is not gcam and _loc(getattr(x, "tag", "")) in later_names]
+            if later_nodes:
+                first_later = later_nodes[0]
                 cur = list(gdtip)
-                if node not in cur or ref not in cur:
-                    return
-                if cur.index(node) < cur.index(ref):
-                    return
-                gdtip.remove(node)
-                cur2 = list(gdtip)
-                gdtip.insert(cur2.index(ref), node)
-
-            def _move_after(node, ref):
-                if node is None or ref is None:
-                    return
-                cur = list(gdtip)
-                if node not in cur or ref not in cur:
-                    return
-                if cur.index(node) > cur.index(ref):
-                    return
-                gdtip.remove(node)
-                cur2 = list(gdtip)
-                gdtip.insert(cur2.index(ref) + 1, node)
-
-            nre   = _find_one("gCamNRE")
-            cond  = _find_one("gCamCond")
-            tr    = _find_one("gTransp")
-            items = _find_all("gCamItem")
-
-            # 1) gCamNRE debe ir antes que gCamCond (si existen ambos)
-            _move_before(nre, cond)
-
-            # 2) gCamItem debe ir después de gCamCond (si existe), sino después de gCamNRE
-            anchor = cond or nre
-            if anchor is not None and items:
-                for it in items:
-                    if it in list(gdtip):
-                        gdtip.remove(it)
-                cur = list(gdtip)
-                pos = cur.index(anchor) + 1
-                for it in items:
-                    gdtip.insert(pos, it)
-                    pos += 1
-
-            # 3) gTransp debe ir después del último gCamItem (si hay items)
-            if tr is not None:
-                cur = list(gdtip)
-                items_now = [x for x in cur if _loc(getattr(x, "tag", "")) == "gCamItem"]
-                if items_now:
-                    last_item = items_now[-1]
-                    if cur.index(tr) < cur.index(last_item):
-                        gdtip.remove(tr)
-                        cur2 = list(gdtip)
-                        gdtip.insert(cur2.index(last_item) + 1, tr)
-                else:
-                    _move_after(tr, cond or nre)
+                if gcam in cur and cur.index(gcam) > cur.index(first_later):
+                    gdtip.remove(gcam)
+                    cur2 = list(gdtip)
+                    gdtip.insert(cur2.index(first_later), gcam)
         except Exception:
             pass
 

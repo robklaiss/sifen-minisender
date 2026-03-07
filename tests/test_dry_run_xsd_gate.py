@@ -46,6 +46,21 @@ def _doc_extra_remision() -> dict:
     return extra
 
 
+def _doc_extra_afe() -> dict:
+    extra = webapp._default_extra_json_for("4") or {}
+    extra["documentoAsociado"] = {"tipoDocumentoAsoc": "3"}
+    extra.setdefault("autofactura", {})
+    extra["autofactura"].setdefault("iNatVen", "1")
+    extra["autofactura"].setdefault("iTipIDVen", "1")
+    extra["autofactura"].setdefault("documento", "123456")
+    extra["autofactura"].setdefault("nombre", "Vendedor")
+    extra["autofactura"].setdefault("direccion", "Direccion")
+    extra["autofactura"].setdefault("numCasa", "0")
+    extra["autofactura"].setdefault("departamentoVendedor", "12")
+    extra["autofactura"].setdefault("ciudadVendedor", "6106")
+    return extra
+
+
 def _build_remision_xml(invoice_id: int, doc_number: str = "0000070") -> dict:
     template = webapp._repo_root() / "templates" / "xml" / "rde_remision.xml"
     lines = [
@@ -65,6 +80,32 @@ def _build_remision_xml(invoice_id: int, doc_number: str = "0000070") -> dict:
         doc_number=doc_number,
         doc_type="7",
         extra_json=_doc_extra_remision(),
+        issue_dt=datetime(2026, 2, 10, 8, 0, 0),
+        codseg="123456789",
+        establishment="001",
+        point_exp="001",
+    )
+
+
+def _build_afe_xml(invoice_id: int, doc_number: str = "0000040") -> dict:
+    template = webapp._repo_root() / "templates" / "xml" / "rde_autofactura.xml"
+    lines = [
+        {
+            "description": "Item autofactura",
+            "qty": Decimal("1"),
+            "price_unit": Decimal("1000"),
+            "line_total": Decimal("1000"),
+            "iva_rate": 10,
+        }
+    ]
+    return webapp._build_invoice_xml_from_template(
+        template_path=str(template),
+        invoice_id=invoice_id,
+        customer={"name": "Cliente Test", "ruc": "80012345-0"},
+        lines=lines,
+        doc_number=doc_number,
+        doc_type="4",
+        extra_json=_doc_extra_afe(),
         issue_dt=datetime(2026, 2, 10, 8, 0, 0),
         codseg="123456789",
         establishment="001",
@@ -181,6 +222,23 @@ def test_validate_de_xml_against_xsd_fails_if_missing_iModTrans(app_ctx):
     assert ok is False
     assert errors
     assert any("iModTrans" in err for err in errors)
+
+
+def test_validate_de_xml_against_xsd_accepts_autofactura_signed_qr(app_ctx):
+    build = _build_afe_xml(invoice_id=4001, doc_number="0004001")
+    signed_xml = _signed_xml_stub(build["xml_bytes"], "", "").decode("utf-8")
+    signed_qr_text, _ = webapp._update_qr_in_signed_xml(
+        signed_xml,
+        os.environ["SIFEN_CSC"],
+        os.environ["SIFEN_CSC_ID"],
+    )
+
+    ok, errors = validate_de_xml_against_xsd(
+        signed_qr_text,
+        schemas_dir=webapp._repo_root() / "schemas_sifen",
+    )
+
+    assert ok is True, errors
 
 
 def test_smoke_dry_run_afe_includes_distrito(app_ctx, monkeypatch):

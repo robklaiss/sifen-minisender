@@ -96,8 +96,9 @@ def test_afe_new_invoice_without_customer_and_builds_vendor(app_ctx):
         assert gdtip is not None
         tags = [el.tag.split("}")[-1] for el in list(gdtip)]
         assert "gCamAE" in tags
+        assert "gCamCond" in tags
         assert "gCamItem" in tags
-        assert tags.index("gCamItem") < tags.index("gCamAE")
+        assert tags.index("gCamAE") < tags.index("gCamCond") < tags.index("gCamItem")
 
 
 def test_afe_new_invoice_city_select(app_ctx):

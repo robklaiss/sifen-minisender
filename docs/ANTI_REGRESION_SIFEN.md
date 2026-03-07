@@ -307,6 +307,83 @@ Reglas de oro:
 - [ ] Envío con `curl` guardando headers/trace en `tmp/`.
 - [ ] Pruebas en DEV/TEST completadas antes de PROD.
 
+## AFE / Autofactura - cadena de fixes que no debe romperse
+
+### Caso real validado
+- Documento AFE aprobado en SIFEN:
+  - invoice id: `39`
+  - doc_number: `0000010`
+  - código SIFEN: `0260`
+  - resultado: `Aprobado`
+
+### Reglas anti-regresion confirmadas para `iTiDE=4`
+1. En `gDtipDE`, el orden correcto es:
+   - `gCamAE`
+   - `gCamCond`
+   - `gCamItem`
+
+2. En AFE, `gDatRec` debe quedar sincronizado con emisor asi:
+   - `dRucRec = dRucEm`
+   - `dDVRec = dDVEmi`
+   - `iNatRec = 1`
+   - `iTiOpe = 2`
+   - `iTiContRec = iTipCont` del emisor
+
+3. En AFE, `gCamItem`:
+   - debe conservar `gValorItem`
+   - no debe incluir `gCamIVA`
+
+4. En AFE, `gCamDEAsoc`:
+   - `iTipDocAso = 3`
+   - `dDesTipDocAso = Constancia Electronica`
+   - `iTipCons` obligatorio
+   - `dDesTipCons` obligatorio
+   - default actual valido:
+     - `iTipCons = 1`
+     - `dDesTipCons = Constancia de no ser contribuyente`
+
+### Errores historicos y causa raiz
+- `0160`: orden XSD incorrecto de `gCamAE`
+- `1316`: `gDatRec/iTiOpe` incompatible para AFE
+- `1901`: `gCamIVA` informado en AFE
+- `2426`: faltaba `iTipCons/dDesTipCons`
+
+### Tests que deben seguir pasando
+- `tests/test_autofactura_master_smoke.py`
+- `tests/test_autofactura_flow.py`
+- `tests/test_template_build_regressions.py::test_autofactura_orders_gcamae_before_cond_and_items_and_keeps_geo_codes`
+- `tests/test_dry_run_xsd_gate.py::test_validate_de_xml_against_xsd_accepts_autofactura_signed_qr`
+- `tests/test_dry_run_xsd_gate.py::test_smoke_dry_run_afe_includes_distrito`
+
+### Smoke maestro local
+- Test maestro: `tests/test_autofactura_master_smoke.py::test_afe_master_smoke_covers_historical_regressions`
+- Cubre en un solo XML AFE:
+  - orden `gCamAE < gCamCond < gCamItem` (`0160`)
+  - `gDatRec/iNatRec = 1`
+  - `gDatRec/iTiOpe = 2` (`1316`)
+  - `gDatRec/iTiContRec = gEmis/iTipCont`
+  - `gCamItem` conserva `gValorItem`
+  - `gCamItem` no incluye `gCamIVA` (`1901`)
+  - `gCamDEAsoc/iTipDocAso = 3`
+  - `gCamDEAsoc/iTipCons` presente
+  - `gCamDEAsoc/dDesTipCons` presente (`2426`)
+  - XSD OK sobre XML firmado + QR
+
+### Comando único de predeploy
+```bash
+make predeploy-afe
+```
+
+Comando exacto que ejecuta ese target:
+```bash
+./.venv/bin/pytest -q \
+  tests/test_autofactura_master_smoke.py \
+  tests/test_autofactura_flow.py \
+  tests/test_template_build_regressions.py::test_autofactura_orders_gcamae_before_cond_and_items_and_keeps_geo_codes \
+  tests/test_dry_run_xsd_gate.py::test_validate_de_xml_against_xsd_accepts_autofactura_signed_qr \
+  tests/test_dry_run_xsd_gate.py::test_smoke_dry_run_afe_includes_distrito
+```
+
 ## Plantilla (copiar/pegar para un nuevo guardrail)
 
 ## Guardrail YYYY-MM-DD — Título corto (componente / norma / endpoint)

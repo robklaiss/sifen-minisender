@@ -106,6 +106,8 @@ def test_afe_new_invoice_without_customer_and_builds_vendor(app_ctx):
         assert "gCamCond" in tags
         assert "gCamItem" in tags
         assert tags.index("gCamAE") < tags.index("gCamCond") < tags.index("gCamItem")
+        assert root.find(".//s:gDtipDE/s:gCamItem/s:gValorItem", NS) is not None
+        assert root.find(".//s:gDtipDE/s:gCamItem/s:gCamIVA", NS) is None
 
 
 def test_afe_new_invoice_city_select(app_ctx):

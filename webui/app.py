@@ -1997,7 +1997,10 @@ def _build_invoice_xml_from_template(
             _update_text(item, "s:gValorItem/s:dTotBruOpeItem", _fmt_decimal_places(line_total, money_places_default), ns)
             _update_text(item, "s:gValorItem/s:gValorRestaItem/s:dTotOpeItem", _fmt_decimal_places(line_total, money_places_default), ns)
 
-            if giva is not None and doc_type != "4":
+            if doc_type == "4":
+                if giva is not None:
+                    item.remove(giva)
+            elif giva is not None:
                 if iva_rate in (5, 10):
                     divisor = Decimal("1.05") if iva_rate == 5 else Decimal("1.10")
                     base_line = (line_total / divisor).quantize(Decimal("1.0000"), rounding=ROUND_HALF_UP)

@@ -144,6 +144,8 @@ def test_autofactura_orders_gcamae_before_cond_and_items_and_keeps_geo_codes(app
     )
     assert (gcam.findtext("s:cDepVen", default="", namespaces=NS) or "").strip() == "12"
     assert (gcam.findtext("s:cCiuVen", default="", namespaces=NS) or "").strip() == "6106"
+    assert root.find(".//s:gDtipDE/s:gCamItem/s:gValorItem", NS) is not None
+    assert root.find(".//s:gDtipDE/s:gCamItem/s:gCamIVA", NS) is None
 
 def test_timbrado_override_and_feinit_validation(app_ctx):
     webapp.set_setting("timbrado_num", "18578288")

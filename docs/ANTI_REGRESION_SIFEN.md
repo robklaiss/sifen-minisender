@@ -481,4 +481,32 @@ COMANDO:
 
 6. Antes de cualquier deploy:
    - Ejecutar: `./scripts/full_check.sh 5`
-   - No desplegar si falla.
+   - No desplegar si falla.\n
+
+## ND / Nota de débito - rechazo 1101 sin evidencia de bug estructural
+
+### Caso real observado
+- FE #45 aprobada:
+  - CDC: `01045547378001001000001712026030719393855141`
+  - resultado: `0260 Aprobado`
+- ND #47 rechazada:
+  - iTiDE=`6`
+  - resultado: `1101 Número de timbrado inválido`
+
+### Hechos comprobados
+- La ND referencia una FE real aprobada mediante `gCamDEAsoc/iTipDocAso=1 + dCdCDERef`.
+- El builder local para `iTiDE=6` genera XML estructuralmente consistente:
+  - `iTiDE=6`
+  - `dDesTiDE=Nota de débito electrónica`
+  - sin `gCamFE`
+  - sin `gCamCond`
+  - con `gCamNCDE/iMotEmi`
+  - con `gCamDEAsoc`
+- XSD local y matriz interna no documentan una diferencia estructural específica entre NC y ND respecto de `gCamNCDE/gCamDEAsoc`.
+- No existe hoy validación local de habilitación de timbrado por tipo documental; `timbrado_num` se modela como override global.
+
+### Conclusión operativa
+- No tocar código todavía.
+- Antes de implementar soporte de timbrado por tipo documental, verificar externamente si el timbrado `18578288` está habilitado para `iTiDE=6`.
+- Solo si esa verificación confirma una matriz distinta por tipo, evaluar cambio de código para timbrado por `iTiDE`.
+\n

@@ -150,6 +150,37 @@ def test_autofactura_orders_gcamae_before_cond_and_items_and_keeps_geo_codes(app
     assert root.find(".//s:gDtipDE/s:gCamItem/s:gValorItem", NS) is not None
     assert root.find(".//s:gDtipDE/s:gCamItem/s:gCamIVA", NS) is None
 
+
+@pytest.mark.parametrize("doc_type", ["5", "6"])
+def test_nc_nd_remove_tiptra_from_gopecom(app_ctx, doc_type):
+    webapp.set_setting("timbrado_num", "18578288")
+    webapp.set_setting("timbrado_fe_ini", "2026-01-14")
+
+    out = _build(doc_type, "0000014", datetime(2026, 2, 10, 8, 0, 0))
+    root = _parse(out["xml_bytes"])
+
+    gopecom = root.find(".//s:gDatGralOpe/s:gOpeCom", NS)
+    assert gopecom is not None
+    assert gopecom.find("s:iTipTra", NS) is None
+    assert gopecom.find("s:dDesTipTra", NS) is None
+    assert root.findtext(".//s:gDatGralOpe/s:gOpeCom/s:iTImp", default="", namespaces=NS) == "1"
+    assert root.findtext(".//s:gDtipDE/s:gCamNCDE/s:iMotEmi", default="", namespaces=NS) == "1"
+
+
+@pytest.mark.parametrize("doc_type", ["1", "4", "7"])
+def test_baseline_doc_types_keep_tiptra_in_gopecom(app_ctx, doc_type):
+    webapp.set_setting("timbrado_num", "18578288")
+    webapp.set_setting("timbrado_fe_ini", "2026-01-14")
+
+    out = _build(doc_type, "0000015", datetime(2026, 2, 10, 8, 0, 0))
+    root = _parse(out["xml_bytes"])
+
+    gopecom = root.find(".//s:gDatGralOpe/s:gOpeCom", NS)
+    assert gopecom is not None
+    assert gopecom.findtext("s:iTipTra", default="", namespaces=NS) == "1"
+    assert gopecom.findtext("s:dDesTipTra", default="", namespaces=NS) == "Venta de mercadería"
+    assert root.findtext(".//s:gDatGralOpe/s:gOpeCom/s:iTImp", default="", namespaces=NS) == "1"
+
 def test_timbrado_override_and_feinit_validation(app_ctx):
     webapp.set_setting("timbrado_num", "18578288")
     webapp.set_setting("timbrado_fe_ini", "2026-01-14")

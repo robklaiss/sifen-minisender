@@ -106,6 +106,9 @@ def test_afe_new_invoice_without_customer_and_builds_vendor(app_ctx):
         assert "gCamCond" in tags
         assert "gCamItem" in tags
         assert tags.index("gCamAE") < tags.index("gCamCond") < tags.index("gCamItem")
+        assert root.findtext(".//s:gCamDEAsoc/s:iTipDocAso", default="", namespaces=NS) == "3"
+        assert root.findtext(".//s:gCamDEAsoc/s:iTipCons", default="", namespaces=NS) == "1"
+        assert root.findtext(".//s:gCamDEAsoc/s:dDesTipCons", default="", namespaces=NS) == "Constancia de no ser contribuyente"
         assert root.find(".//s:gDtipDE/s:gCamItem/s:gValorItem", NS) is not None
         assert root.find(".//s:gDtipDE/s:gCamItem/s:gCamIVA", NS) is None
 

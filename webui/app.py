@@ -115,6 +115,11 @@ DOC_IMPRESO_TYPE_MAP = {
     "5": "Comprobante de retención",
 }
 
+CONSTANCIA_TYPE_MAP = {
+    "1": "Constancia de no ser contribuyente",
+    "2": "Constancia de microproductores",
+}
+
 NC_MOTIVO_MAP = {
     "1": "Devolución y Ajuste de precios",
     "2": "Devolución",
@@ -621,6 +626,9 @@ def _default_extra_json_for(doc_type: str) -> Optional[dict]:
             data["autofactura"]["iTipIDVen"] = str(
                 data["autofactura"].get("tipoDocumento") or "1"
             )
+        tip_cons = _resolve_afe_constancia_type(data)
+        if tip_cons:
+            data["documentoAsociado"]["tipoConstancia"] = tip_cons
         return data
     if doc_type in ("5", "6"):
         # usar nota de crédito como base para NC/ND
@@ -673,6 +681,23 @@ def _afe_vendor_form_values(afe_vendor: dict) -> dict:
         "distrito": _afe_pick(afe_vendor, "cDisVen", "distritoVendedor", "distrito"),
         "ciudad": _afe_pick(afe_vendor, "cCiuVen", "ciudadVendedor", "ciudad"),
     }
+
+def _resolve_afe_constancia_type(extra_json: dict, assoc: Optional[dict] = None) -> str:
+    extra_json = extra_json or {}
+    assoc = assoc or (extra_json.get("documentoAsociado") or {})
+    tip = str(
+        assoc.get("tipoConstancia")
+        or assoc.get("tipoConst")
+        or assoc.get("iTipCons")
+        or assoc.get("iTiConst")
+        or ""
+    ).strip()
+    if tip in CONSTANCIA_TYPE_MAP:
+        return tip
+    afe_vendor = _afe_vendor_from_extra(extra_json)
+    if _afe_pick(afe_vendor, "iNatVen", "naturaleza", "tipo_vendedor") == "1":
+        return "1"
+    return ""
 
 def _set_afe_vendor_extra(extra_json: dict, vendor: dict) -> dict:
     extra_json = extra_json or {}
@@ -944,6 +969,10 @@ def _validate_doc_extra(doc_type: str, extra_json: dict) -> list:
         tip = str(assoc.get("tipoDocumentoAsoc") or assoc.get("iTipDocAso") or "").strip()
         if tip and tip != "3":
             errors.append("Autofactura: documentoAsociado.tipoDocumentoAsoc debe ser 3 (Constancia electrónica).")
+        elif tip == "3":
+            tip_cons = _resolve_afe_constancia_type(extra_json, assoc)
+            if not tip_cons:
+                errors.append("Autofactura: falta tipo de constancia (iTipCons 1/2) para documentoAsociado.tipoDocumentoAsoc=3.")
     if doc_type in ("5", "6"):
         assoc = extra_json.get("documentoAsociado") or {}
         tip = str(assoc.get("tipoDocumentoAsoc") or assoc.get("iTipDocAso") or "").strip()
@@ -2379,6 +2408,12 @@ def _build_invoice_xml_from_template(
             fec = str(assoc.get("fechaDocIm") or assoc.get("dFecEmiDI") or "").strip()
             if fec:
                 _ensure_child_ns(gcam, "dFecEmiDI", ns_uri).text = fec.split(" ")[0]
+        elif tip_doc_aso == "3":
+            tip_cons = _resolve_afe_constancia_type(extra_json, assoc)
+            if not tip_cons:
+                raise RuntimeError("documentoAsociado.tipoConstancia/iTipCons requerido para iTipDocAso=3 en Autofactura")
+            _ensure_child_ns(gcam, "iTipCons", ns_uri).text = tip_cons
+            _ensure_child_ns(gcam, "dDesTipCons", ns_uri).text = CONSTANCIA_TYPE_MAP[tip_cons]
 
     out = ET.tostring(root, encoding="utf-8", method="xml")
     return {
@@ -4242,6 +4277,9 @@ def _diagnostics_dry_run() -> dict:
                 extra["autofactura"].setdefault("nombre", "Vendedor")
                 extra["autofactura"].setdefault("direccion", "Direccion")
                 extra["autofactura"].setdefault("numCasa", "0")
+                tip_cons = _resolve_afe_constancia_type(extra)
+                if tip_cons:
+                    extra["documentoAsociado"]["tipoConstancia"] = tip_cons
                 geo_tree = _load_georef_tree()
                 dep_code, dist_code, city_code = _find_default_afe_geo(geo_tree)
                 if dep_code:
@@ -6915,6 +6953,9 @@ def invoice_new():
             }
             extra_json = {"documentoAsociado": {"tipoDocumentoAsoc": "3"}}
             _set_afe_vendor_extra(extra_json, vendor)
+            tip_cons = _resolve_afe_constancia_type(extra_json)
+            if tip_cons:
+                extra_json["documentoAsociado"]["tipoConstancia"] = tip_cons
             errors = _validate_doc_extra(doc_type, extra_json)
             if errors:
                 return _render_form("En Autofactura debes completar los datos del vendedor.\n- " + "\n- ".join(errors), 400)
@@ -7868,6 +7909,9 @@ def invoice_set_afe_vendedor(invoice_id: int):
     extra = extra or {}
     extra["documentoAsociado"] = {"tipoDocumentoAsoc": "3"}
     _set_afe_vendor_extra(extra, vendor)
+    tip_cons = _resolve_afe_constancia_type(extra)
+    if tip_cons:
+        extra["documentoAsociado"]["tipoConstancia"] = tip_cons
 
     errors = _validate_doc_extra(doc_type, extra)
     if errors:

@@ -137,6 +137,11 @@ def test_autofactura_orders_gcamae_before_cond_and_items_and_keeps_geo_codes(app
     gcam = root.find(".//s:gDtipDE/s:gCamAE", NS)
     assert gcam is not None
 
+    assert root.findtext(".//s:gDatRec/s:iNatRec", default="", namespaces=NS) == "1"
+    assert root.findtext(".//s:gDatRec/s:iTiOpe", default="", namespaces=NS) == "2"
+    assert root.findtext(".//s:gDatRec/s:iTiContRec", default="", namespaces=NS) == root.findtext(
+        ".//s:gEmis/s:iTipCont", default="", namespaces=NS
+    )
     assert (gcam.findtext("s:cDepVen", default="", namespaces=NS) or "").strip() == "12"
     assert (gcam.findtext("s:cCiuVen", default="", namespaces=NS) or "").strip() == "6106"
 

@@ -705,6 +705,11 @@ def _sync_afe_receiver_with_emitter(root: ET.Element, ns: dict, ns_uri: str) -> 
     _copy("dDesCiuEmi", "dDesCiuRec")
     _copy("dTelEmi", "dTelRec")
     _copy("dEmailE", "dEmailRec")
+    _copy("iTipCont", "iTiContRec")
+
+    # MT v150 D201a/D202a: en AFE el receptor es contribuyente y la operación debe ser B2C.
+    _ensure_child_ns(g_rec, "iNatRec", ns_uri).text = "1"
+    _ensure_child_ns(g_rec, "iTiOpe", ns_uri).text = "2"
 
 def _get_transport_from_extra(extra_json: dict) -> dict:
     extra_json = extra_json or {}

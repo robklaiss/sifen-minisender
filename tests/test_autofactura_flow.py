@@ -83,9 +83,16 @@ def test_afe_new_invoice_without_customer_and_builds_vendor(app_ctx):
 
         root = ET.fromstring(build["xml_bytes"])
         ruc_em = root.findtext(".//s:gEmis/s:dRucEm", default="", namespaces=NS)
+        tip_cont_em = root.findtext(".//s:gEmis/s:iTipCont", default="", namespaces=NS)
         ruc_rec = root.findtext(".//s:gDatRec/s:dRucRec", default="", namespaces=NS)
+        i_nat_rec = root.findtext(".//s:gDatRec/s:iNatRec", default="", namespaces=NS)
+        i_ti_ope = root.findtext(".//s:gDatRec/s:iTiOpe", default="", namespaces=NS)
+        i_ti_cont_rec = root.findtext(".//s:gDatRec/s:iTiContRec", default="", namespaces=NS)
         assert ruc_em
         assert ruc_rec == ruc_em
+        assert i_nat_rec == "1"
+        assert i_ti_ope == "2"
+        assert i_ti_cont_rec == tip_cont_em
 
         gcam = root.find(".//s:gDtipDE/s:gCamAE", NS)
         assert gcam is not None

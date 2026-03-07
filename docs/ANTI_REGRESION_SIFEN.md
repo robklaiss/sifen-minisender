@@ -358,16 +358,16 @@ Reglas de oro:
 ### Smoke maestro local
 - Test maestro: `tests/test_autofactura_master_smoke.py::test_afe_master_smoke_covers_historical_regressions`
 - Cubre en un solo XML AFE:
-  - orden `gCamAE < gCamCond < gCamItem` (`0160`)
-  - `gDatRec/iNatRec = 1`
-  - `gDatRec/iTiOpe = 2` (`1316`)
-  - `gDatRec/iTiContRec = gEmis/iTipCont`
-  - `gCamItem` conserva `gValorItem`
-  - `gCamItem` no incluye `gCamIVA` (`1901`)
-  - `gCamDEAsoc/iTipDocAso = 3`
-  - `gCamDEAsoc/iTipCons` presente
-  - `gCamDEAsoc/dDesTipCons` presente (`2426`)
-  - XSD OK sobre XML firmado + QR
+- orden `gCamAE < gCamCond < gCamItem` (`0160`)
+- `gDatRec/iNatRec = 1`
+- `gDatRec/iTiOpe = 2` (`1316`)
+- `gDatRec/iTiContRec = gEmis/iTipCont`
+- `gCamItem` conserva `gValorItem`
+- `gCamItem` no incluye `gCamIVA` (`1901`)
+- `gCamDEAsoc/iTipDocAso = 3`
+- `gCamDEAsoc/iTipCons` presente
+- `gCamDEAsoc/dDesTipCons` presente (`2426`)
+- XSD OK sobre XML firmado + QR
 
 ### Comando único de predeploy
 ```bash
@@ -382,6 +382,62 @@ Comando exacto que ejecuta ese target:
   tests/test_template_build_regressions.py::test_autofactura_orders_gcamae_before_cond_and_items_and_keeps_geo_codes \
   tests/test_dry_run_xsd_gate.py::test_validate_de_xml_against_xsd_accepts_autofactura_signed_qr \
   tests/test_dry_run_xsd_gate.py::test_smoke_dry_run_afe_includes_distrito
+```
+
+## NC / Nota de crédito - validación de cierre
+
+### Caso real validado
+- Documento NC aprobado en SIFEN:
+  - invoice id: `43`
+  - doc_number: `0000003`
+  - código SIFEN: `0260`
+  - resultado: `Aprobado`
+
+### Reglas anti-regresion confirmadas para `iTiDE=5/6`
+1. En `gDatGralOpe/gOpeCom`:
+   - no informar `iTipTra`
+   - no informar `dDesTipTra`
+
+2. Mantener en `gDatGralOpe/gOpeCom`:
+   - `iTImp`
+   - moneda
+   - resto del bloque aplicable
+
+### Observación operativa
+- Si aparece `1309` (`DV del RUC incorrecto`), revisar primero el cliente cargado.
+- No confundir error de datos del receptor con error del builder XML.
+
+### Caso real de datos
+- `Cliente Demo S.A. — 80012345-6` produjo rechazo `1309`
+- `Robin Klaiss — 7524653-8` produjo aprobación `0260`
+
+### Tests que deben seguir pasando
+- `tests/test_template_build_regressions.py::test_nc_nd_remove_tiptra_from_gopecom`
+- `tests/test_xml_generator_v150_regressions.py::test_create_rde_xml_v150_omits_tiptra_for_nc_nd`
+
+### Smoke maestro local
+- Test maestro: `tests/test_nota_credito_master_smoke.py::test_nc_master_smoke_covers_historical_regressions`
+- Cubre en un solo XML NC:
+- `gDatGralOpe/gOpeCom` sin `iTipTra`
+- `gDatGralOpe/gOpeCom` sin `dDesTipTra`
+- `gDtipDE/gCamNCDE/iMotEmi` presente
+- `gCamDEAsoc/iTipDocAso = 1`
+- `gCamDEAsoc/dCdCDERef` presente
+- `gDtipDE/gCamCond` ausente
+- `gDtipDE/gTransp` ausente
+- XSD OK sobre XML firmado + QR
+
+### Comando único de predeploy
+```bash
+make predeploy-nc
+```
+
+Comando exacto que ejecuta ese target:
+```bash
+./.venv/bin/pytest -q \
+  tests/test_nota_credito_master_smoke.py \
+  tests/test_xml_generator_v150_regressions.py \
+  tests/test_template_build_regressions.py::test_baseline_doc_types_keep_tiptra_in_gopecom
 ```
 
 ## Plantilla (copiar/pegar para un nuevo guardrail)

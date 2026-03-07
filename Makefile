@@ -7,7 +7,7 @@ RETRIES ?= 6
 SLEEP ?= 10
 ARTIFACTS_DIR ?= /data/artifacts
 
-.PHONY: up down logs shell test check-env sample-xml send-test poll-test send-prod poll-prod smoke-local predeploy-afe
+.PHONY: up down logs shell test check-env sample-xml send-test poll-test send-prod poll-prod smoke-local predeploy-afe predeploy-nc
 
 up:
 	$(COMPOSE) up -d --build
@@ -61,3 +61,9 @@ predeploy-afe:
 		tests/test_template_build_regressions.py::test_autofactura_orders_gcamae_before_cond_and_items_and_keeps_geo_codes \
 		tests/test_dry_run_xsd_gate.py::test_validate_de_xml_against_xsd_accepts_autofactura_signed_qr \
 		tests/test_dry_run_xsd_gate.py::test_smoke_dry_run_afe_includes_distrito
+
+predeploy-nc:
+	./.venv/bin/pytest -q \
+		tests/test_nota_credito_master_smoke.py \
+		tests/test_xml_generator_v150_regressions.py \
+		tests/test_template_build_regressions.py::test_baseline_doc_types_keep_tiptra_in_gopecom

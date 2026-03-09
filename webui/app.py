@@ -1949,7 +1949,7 @@ def _build_invoice_xml_from_template(
         raise RuntimeError("No se encontró <gDtipDE> en el XML base.")
     if doc_type != "1":
         _remove_child_ns(gdtip, "gCamFE", ns_uri)
-    if doc_type not in ("1", "4", "7"):
+    if doc_type not in ("1", "4"):
         _remove_child_ns(gdtip, "gCamCond", ns_uri)
     if doc_type == "7":
         gopecom = root.find(".//s:gDatGralOpe/s:gOpeCom", ns)
@@ -2080,35 +2080,6 @@ def _build_invoice_xml_from_template(
         if fec:
             _ensure_child_ns(gcam, "dFecEm", ns_uri).text = str(fec).split(" ")[0]
             _move_child_before_ns(gcam, "dKmR", "dFecEm", ns_uri)
-
-
-    # gCamCond (Condición de la operación) - requerido por orden XSD antes de gTransp en Remisión.
-    # Normalizamos estructura mínima incluso si la plantilla ya trae gCamCond.
-    if doc_type == "7":
-        gcamcond = _ensure_child_ns(gdtip, "gCamCond", ns_uri)
-        icond = _ensure_child_ns(gcamcond, "iCondOpe", ns_uri)
-        if not (icond.text or "").strip():
-            icond.text = "1"
-        dcond = _ensure_child_ns(gcamcond, "dDCondOpe", ns_uri)
-        if not (dcond.text or "").strip():
-            dcond.text = "Contado"
-        gpa = _ensure_child_ns(gcamcond, "gPaConEIni", ns_uri)
-        itipago = _ensure_child_ns(gpa, "iTiPago", ns_uri)
-        if not (itipago.text or "").strip():
-            itipago.text = "1"
-        dtipago = _ensure_child_ns(gpa, "dDesTiPag", ns_uri)
-        if not (dtipago.text or "").strip():
-            dtipago.text = "Efectivo"
-        # Nota: montos se recalculan en otros pasos; dejamos placeholder mínimo válido.
-        dmonto = _ensure_child_ns(gpa, "dMonTiPag", ns_uri)
-        if not (dmonto.text or "").strip():
-            dmonto.text = "0"
-        cmon = _ensure_child_ns(gpa, "cMoneTiPag", ns_uri)
-        if not (cmon.text or "").strip():
-            cmon.text = "PYG"
-        dmon = _ensure_child_ns(gpa, "dDMoneTiPag", ns_uri)
-        if not (dmon.text or "").strip():
-            dmon.text = "Guarani"
 
     # Ítems y totales base (necesarios para CDC, PDF y gTotSub)
     if not lines:

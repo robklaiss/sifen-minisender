@@ -288,6 +288,7 @@ def test_nre_new_invoice_builds_transporte(app_ctx):
         root = ET.fromstring(build["xml_bytes"])
         gcam_nre = root.find(".//s:gDtipDE/s:gCamNRE", NS)
         assert gcam_nre is not None
+        assert root.find(".//s:gDtipDE/s:gCamCond", NS) is None
         assert root.find(".//s:gDtipDE/s:gTransp", NS) is not None
         assert gcam_nre.findtext("s:dKmR", default="", namespaces=NS) == "1"
         assert gcam_nre.findtext("s:dFecEm", default="", namespaces=NS) == "2026-03-01"

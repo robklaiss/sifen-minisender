@@ -11,6 +11,7 @@ import webui.app as webapp
 
 
 NS = {"s": "http://ekuatia.set.gov.py/sifen/xsd"}
+FE_CDC_REF = "01" + ("1" * 42)
 
 
 def _doc_extra_for(doc_type: str) -> dict:
@@ -29,7 +30,7 @@ def _doc_extra_for(doc_type: str) -> dict:
     if doc_type in ("5", "6"):
         extra["documentoAsociado"] = {
             "tipoDocumentoAsoc": "1",
-            "cdcAsociado": "0" * 44,
+            "cdcAsociado": FE_CDC_REF,
         }
         extra["iMotEmi"] = "1"
     if doc_type == "7":
@@ -167,7 +168,7 @@ def test_nc_nd_remove_tiptra_from_gopecom(app_ctx, doc_type):
     assert root.findtext(".//s:gDtipDE/s:gCamNCDE/s:iMotEmi", default="", namespaces=NS) == "1"
 
 
-@pytest.mark.parametrize("doc_type", ["1", "4", "7"])
+@pytest.mark.parametrize("doc_type", ["1", "4"])
 def test_baseline_doc_types_keep_tiptra_in_gopecom(app_ctx, doc_type):
     webapp.set_setting("timbrado_num", "18578288")
     webapp.set_setting("timbrado_fe_ini", "2026-01-14")
@@ -180,6 +181,16 @@ def test_baseline_doc_types_keep_tiptra_in_gopecom(app_ctx, doc_type):
     assert gopecom.findtext("s:iTipTra", default="", namespaces=NS) == "1"
     assert gopecom.findtext("s:dDesTipTra", default="", namespaces=NS) == "Venta de mercadería"
     assert root.findtext(".//s:gDatGralOpe/s:gOpeCom/s:iTImp", default="", namespaces=NS) == "1"
+
+
+def test_nre_removes_gopecom_from_gdatgralope(app_ctx):
+    webapp.set_setting("timbrado_num", "18578288")
+    webapp.set_setting("timbrado_fe_ini", "2026-01-14")
+
+    out = _build("7", "0000015", datetime(2026, 2, 10, 8, 0, 0))
+    root = _parse(out["xml_bytes"])
+
+    assert root.find(".//s:gDatGralOpe/s:gOpeCom", NS) is None
 
 def test_timbrado_override_and_feinit_validation(app_ctx):
     webapp.set_setting("timbrado_num", "18578288")

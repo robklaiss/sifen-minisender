@@ -1951,6 +1951,12 @@ def _build_invoice_xml_from_template(
         _remove_child_ns(gdtip, "gCamFE", ns_uri)
     if doc_type not in ("1", "4", "7"):
         _remove_child_ns(gdtip, "gCamCond", ns_uri)
+    if doc_type == "7":
+        gopecom = root.find(".//s:gDatGralOpe/s:gOpeCom", ns)
+        if gopecom is not None:
+            parent = root.find(".//s:gDatGralOpe", ns)
+            if parent is not None:
+                parent.remove(gopecom)
     if doc_type in ("5", "6"):
         gopecom = root.find(".//s:gDatGralOpe/s:gOpeCom", ns)
         if gopecom is not None:

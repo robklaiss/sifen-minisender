@@ -872,9 +872,7 @@ def _validate_doc_extra(doc_type: str, extra_json: dict) -> list:
         return len(val) == length if length else True
 
     if doc_type in ("4", "5", "6"):
-        assoc = extra_json.get("documentoAsociado") or {}
-        if not assoc and extra_json.get("cdcAsociado"):
-            assoc = {"tipoDocumentoAsoc": "1", "cdcAsociado": extra_json.get("cdcAsociado")}
+        assoc = _assoc_from_extra(extra_json)
         if not assoc:
             errors.append("Falta documentoAsociado (obligatorio para AFE/NC/ND).")
         else:
@@ -894,6 +892,8 @@ def _validate_doc_extra(doc_type: str, extra_json: dict) -> list:
                     errors.append("documentoAsociado (iTipDocAso=2) requiere timbrado/establecimiento/punto/numero.")
 
     if doc_type in ("5", "6"):
+        assoc, assoc_errors = _normalize_nc_nd_assoc(_assoc_from_extra(extra_json))
+        errors.extend(assoc_errors)
         mot = str(extra_json.get("iMotEmi") or extra_json.get("motivo") or extra_json.get("descripcion") or "").strip()
         if mot not in NC_MOTIVO_MAP:
             errors.append("Falta iMotEmi en doc_extra_json (1-8) para Nota de crédito/débito.")
@@ -973,12 +973,6 @@ def _validate_doc_extra(doc_type: str, extra_json: dict) -> list:
             tip_cons = _resolve_afe_constancia_type(extra_json, assoc)
             if not tip_cons:
                 errors.append("Autofactura: falta tipo de constancia (iTipCons 1/2) para documentoAsociado.tipoDocumentoAsoc=3.")
-    if doc_type in ("5", "6"):
-        assoc = extra_json.get("documentoAsociado") or {}
-        tip = str(assoc.get("tipoDocumentoAsoc") or assoc.get("iTipDocAso") or "").strip()
-        if tip == "3":
-            errors.append("Nota crédito/débito: documentoAsociado.tipoDocumentoAsoc no puede ser 3 (Constancia electrónica).")
-
     if doc_type == "7":
         rem = extra_json.get("remision") or {}
         mot = str(rem.get("iMotEmiNR") or rem.get("motivo") or "").strip()
@@ -1171,6 +1165,92 @@ def _zfill_digits(value: Optional[str], width: int) -> str:
     if not digits:
         return ""
     return digits.zfill(width)
+
+
+def _assoc_from_extra(extra_json: dict) -> dict:
+    extra_json = extra_json or {}
+    assoc = extra_json.get("documentoAsociado") or {}
+    if not assoc and extra_json.get("cdcAsociado"):
+        assoc = {"tipoDocumentoAsoc": "1", "cdcAsociado": extra_json.get("cdcAsociado")}
+    return dict(assoc or {})
+
+
+def _normalize_nc_nd_assoc(assoc: dict) -> tuple[dict, list[str]]:
+    assoc = dict(assoc or {})
+    tip = str(assoc.get("tipoDocumentoAsoc") or assoc.get("iTipDocAso") or "1").strip()
+    cdc = str(assoc.get("cdcAsociado") or assoc.get("dCdCDERef") or "").strip()
+    tim = _zfill_digits(assoc.get("timbradoAsoc"), 8)
+    est = _zfill_digits(assoc.get("establecimientoAsoc"), 3)
+    pun = _zfill_digits(assoc.get("puntoAsoc"), 3)
+    num = _zfill_digits(assoc.get("numeroAsoc"), 7)
+    tipo_imp = str(
+        assoc.get("tipoDocumentoIm")
+        or assoc.get("tipoDocuemntoIm")
+        or assoc.get("iTipoDocAso")
+        or ""
+    ).strip()
+    fec_raw = str(assoc.get("fechaDocIm") or assoc.get("dFecEmiDI") or "").strip()
+    fec = fec_raw.split(" ")[0] if fec_raw else ""
+    has_printed_payload = any([tim, est, pun, num, tipo_imp, fec])
+    errors = []
+
+    norm = {"tipoDocumentoAsoc": tip}
+
+    if tip not in ("1", "2"):
+        errors.append("Nota crédito/débito: documentoAsociado.tipoDocumentoAsoc debe ser 1 (electrónico) o 2 (impreso).")
+        return norm, errors
+
+    if tip == "1":
+        if has_printed_payload:
+            errors.append("Nota crédito/débito: no mezclar referencia electrónica e impresa en documentoAsociado.")
+        if not (cdc.isdigit() and len(cdc) == 44):
+            errors.append("documentoAsociado.cdcAsociado debe ser CDC de 44 dígitos (iTipDocAso=1).")
+        elif cdc[:2] != "01":
+            errors.append("Nota crédito/débito: el CDC asociado debe referenciar una Factura electrónica (01...).")
+        norm["cdcAsociado"] = cdc
+        return norm, errors
+
+    if cdc:
+        errors.append("Nota crédito/débito: no mezclar referencia electrónica e impresa en documentoAsociado.")
+    if not all([tim, est, pun, num]):
+        errors.append("documentoAsociado (iTipDocAso=2) requiere timbrado/establecimiento/punto/numero.")
+    if tipo_imp and tipo_imp != "1":
+        errors.append("Nota crédito/débito: documentoAsociado.tipoDocumentoIm debe ser 1 (Factura) para iTipDocAso=2.")
+    if not fec:
+        errors.append("Nota crédito/débito: documentoAsociado.fechaDocIm es obligatoria para iTipDocAso=2.")
+    else:
+        try:
+            date.fromisoformat(fec)
+        except ValueError:
+            errors.append("Nota crédito/débito: documentoAsociado.fechaDocIm debe tener formato YYYY-MM-DD.")
+
+    norm.update(
+        {
+            "timbradoAsoc": tim,
+            "establecimientoAsoc": est,
+            "puntoAsoc": pun,
+            "numeroAsoc": num,
+            "tipoDocumentoIm": "1",
+            "fechaDocIm": fec,
+        }
+    )
+    return norm, errors
+
+
+def _clear_assoc_group(gcam: ET.Element, ns_uri: str) -> None:
+    for tag in (
+        "dCdCDERef",
+        "dNTimDI",
+        "dEstDocAso",
+        "dPExpDocAso",
+        "dNumDocAso",
+        "iTipoDocAso",
+        "dDTipoDocAso",
+        "dFecEmiDI",
+        "iTipCons",
+        "dDesTipCons",
+    ):
+        _remove_child_ns(gcam, tag, ns_uri)
 
 def _geo_display_code(value: Optional[str]) -> str:
     if value is None:
@@ -1540,15 +1620,15 @@ def _normalize_vehicle_plate(value: Optional[str]) -> str:
 def _normalize_remision_km(value) -> str:
     raw = str(value).strip() if value is not None else ""
     if not raw:
-        return "0"
+        return "1"
     dec = _to_decimal(raw, default=None)
     if dec is not None:
         try:
-            return str(int(dec))
+            return str(max(1, int(dec)))
         except Exception:
             pass
     digits = re.sub(r"\D", "", raw)
-    return digits.lstrip("0") or "0"
+    return digits.lstrip("0") or "1"
 
 def _build_gtransp_from_extra(gdtip: ET.Element, ns_uri: str, transporte_dict: dict) -> None:
     if not isinstance(transporte_dict, dict):
@@ -2418,11 +2498,13 @@ def _build_invoice_xml_from_template(
 
     # gCamDEAsoc para AFE/NC/ND
     if doc_type in ("4", "5", "6"):
-        assoc = extra_json.get("documentoAsociado") or {}
-        if not assoc and extra_json.get("cdcAsociado"):
-            assoc = {"tipoDocumentoAsoc": "1", "cdcAsociado": extra_json.get("cdcAsociado")}
+        assoc = _assoc_from_extra(extra_json)
         if not assoc:
             raise RuntimeError("Falta documentoAsociado en doc_extra_json (obligatorio para AFE/NC/ND).")
+        if doc_type in ("5", "6"):
+            assoc, assoc_errors = _normalize_nc_nd_assoc(assoc)
+            if assoc_errors:
+                raise RuntimeError(" | ".join(assoc_errors))
         de_node = root.find(".//s:DE", ns)
         if de_node is None:
             raise RuntimeError("No se encontró <DE> para insertar gCamDEAsoc.")
@@ -2441,6 +2523,7 @@ def _build_invoice_xml_from_template(
             tip_doc_aso = "1"
         _ensure_child_ns(gcam, "iTipDocAso", ns_uri).text = tip_doc_aso
         _ensure_child_ns(gcam, "dDesTipDocAso", ns_uri).text = DOC_ASOC_TYPE_MAP.get(tip_doc_aso, "Electrónico")
+        _clear_assoc_group(gcam, ns_uri)
 
         if tip_doc_aso == "1":
             cdc_ref = str(assoc.get("cdcAsociado") or assoc.get("dCdCDERef") or "").strip()
@@ -2460,6 +2543,8 @@ def _build_invoice_xml_from_template(
             _ensure_child_ns(gcam, "dNumDocAso", ns_uri).text = num
 
             tipo_imp = str(assoc.get("tipoDocumentoIm") or assoc.get("tipoDocuemntoIm") or assoc.get("iTipoDocAso") or "").strip()
+            if doc_type in ("5", "6"):
+                tipo_imp = "1"
             if tipo_imp:
                 _ensure_child_ns(gcam, "iTipoDocAso", ns_uri).text = tipo_imp
                 _ensure_child_ns(gcam, "dDTipoDocAso", ns_uri).text = DOC_IMPRESO_TYPE_MAP.get(tipo_imp, "Factura")
@@ -4349,7 +4434,7 @@ def _diagnostics_dry_run() -> dict:
             if doc_type in ("5", "6"):
                 extra["documentoAsociado"] = {
                     "tipoDocumentoAsoc": "1",
-                    "cdcAsociado": "0" * 44,
+                    "cdcAsociado": "01" + ("0" * 42),
                 }
                 extra["iMotEmi"] = extra.get("iMotEmi") or "1"
 

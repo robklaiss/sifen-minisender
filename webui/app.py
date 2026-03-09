@@ -1496,6 +1496,60 @@ def _fill_geo_desc_in(parent: Optional[ET.Element], code_tag: str, desc_tag: str
     if name:
         _ensure_child_ns(parent, desc_tag, ns_uri).text = name
 
+
+def _move_child_before_ns(parent: ET.Element, tag: str, ref_tag: str, ns_uri: str) -> None:
+    node = parent.find(f"{{{ns_uri}}}{tag}")
+    ref = parent.find(f"{{{ns_uri}}}{ref_tag}")
+    if node is None or ref is None or node is ref:
+        return
+    children = list(parent)
+    if node not in children or ref not in children:
+        return
+    if children.index(node) < children.index(ref):
+        return
+    parent.remove(node)
+    parent.insert(list(parent).index(ref), node)
+
+
+def _normalize_country_code(value: Optional[str]) -> str:
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return ""
+    compact = re.sub(r"[^A-Z]", "", raw.upper())
+    aliases = {
+        "PARAGUAYA": "PRY",
+        "PARAGUAY": "PRY",
+        "PY": "PRY",
+        "PRY": "PRY",
+    }
+    if compact in aliases:
+        return aliases[compact]
+    if re.fullmatch(r"[A-Z]{3}", compact):
+        return compact
+    return raw.upper()
+
+
+def _normalize_vehicle_plate(value: Optional[str]) -> str:
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return ""
+    compact = re.sub(r"[^0-9A-Z]", "", raw.upper())
+    return compact or raw.upper()
+
+
+def _normalize_remision_km(value) -> str:
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return "0"
+    dec = _to_decimal(raw, default=None)
+    if dec is not None:
+        try:
+            return str(int(dec))
+        except Exception:
+            pass
+    digits = re.sub(r"\D", "", raw)
+    return digits.lstrip("0") or "0"
+
 def _build_gtransp_from_extra(gdtip: ET.Element, ns_uri: str, transporte_dict: dict) -> None:
     if not isinstance(transporte_dict, dict):
         raise RuntimeError("doc_extra_json.transporte inválido para Remisión (iTiDE=7).")
@@ -1596,7 +1650,7 @@ def _build_gtransp_from_extra(gdtip: ET.Element, ns_uri: str, transporte_dict: d
     _ensure_child_ns(gveh, "dMarVeh", ns_uri).text = veh_marca
     _ensure_child_ns(gveh, "dTipIdenVeh", ns_uri).text = veh_doc_tipo
     if veh_doc_tipo == "1":
-        _ensure_child_ns(gveh, "dNroMatVeh", ns_uri).text = veh_num
+        _ensure_child_ns(gveh, "dNroMatVeh", ns_uri).text = _normalize_vehicle_plate(veh_num)
     else:
         _ensure_child_ns(gveh, "dNroIDVeh", ns_uri).text = veh_num
     _set_opt(gveh, "dAdicVeh", _s(veh.get("adic")))
@@ -1645,7 +1699,7 @@ def _build_gtransp_from_extra(gdtip: ET.Element, ns_uri: str, transporte_dict: d
             if num_tr:
                 _ensure_child_ns(gcamtrans, "dNumIDTrans", ns_uri).text = num_tr
 
-        c_nac = _s(trans.get("cNacTrans") or trans.get("nacionalidad"))
+        c_nac = _normalize_country_code(trans.get("cNacTrans") or trans.get("nacionalidad"))
         if c_nac:
             _ensure_child_ns(gcamtrans, "cNacTrans", ns_uri).text = c_nac
             _set_opt(gcamtrans, "dDesNacTrans", _s(trans.get("dDesNacTrans")))
@@ -1934,13 +1988,12 @@ def _build_invoice_xml_from_template(
         _ensure_child_ns(gcam, "iRespEmiNR", ns_uri).text = resp
         _ensure_child_ns(gcam, "dDesRespEmiNR", ns_uri).text = REM_RESP_MAP.get(resp, "Emisor de la factura")
 
-        km = rem.get("kmEstimado")
-        if km is not None and str(km).strip() != "":
-            _ensure_child_ns(gcam, "dKmR", ns_uri).text = str(int(float(km)))
+        _ensure_child_ns(gcam, "dKmR", ns_uri).text = _normalize_remision_km(rem.get("kmEstimado"))
 
         fec = rem.get("fechaFactura") or rem.get("dFecEm")
         if fec:
             _ensure_child_ns(gcam, "dFecEm", ns_uri).text = str(fec).split(" ")[0]
+            _move_child_before_ns(gcam, "dKmR", "dFecEm", ns_uri)
 
 
     # gCamCond (Condición de la operación) - requerido por orden XSD antes de gTransp en Remisión.

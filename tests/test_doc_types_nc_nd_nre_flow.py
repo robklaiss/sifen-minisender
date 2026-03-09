@@ -138,6 +138,7 @@ def test_nre_new_invoice_builds_transporte(app_ctx):
         "nre_responsable": "1",
         "nre_trans_modalidad": "1",
         "nre_trans_resp_flete": "1",
+        "nre_fecha_factura": "2026-03-01",
         "nre_sal_direccion": "Calle 1",
         "nre_sal_num_casa": "0",
         "nre_sal_departamento": dep_code,
@@ -151,11 +152,12 @@ def test_nre_new_invoice_builds_transporte(app_ctx):
         "nre_veh_tipo": "1",
         "nre_veh_marca": "Toyota",
         "nre_veh_doc_tipo": "1",
-        "nre_veh_numero": "ABC123",
+        "nre_veh_numero": "AAET 366",
         "nre_transp_tipo": "1",
         "nre_transp_nombre": "Transportes SA",
         "nre_transp_numero": "80012345-6",
         "nre_transp_dir": "Av. Siempre Viva",
+        "nre_transp_nacionalidad": "PARAGUAYA",
         "nre_chof_nombre": "Chofer Uno",
         "nre_chof_numero": "1234567",
         "nre_chof_dir": "Barrio Centro",
@@ -197,5 +199,18 @@ def test_nre_new_invoice_builds_transporte(app_ctx):
             point_exp="001",
         )
         root = ET.fromstring(build["xml_bytes"])
-        assert root.find(".//s:gDtipDE/s:gCamNRE", NS) is not None
+        gcam_nre = root.find(".//s:gDtipDE/s:gCamNRE", NS)
+        assert gcam_nre is not None
         assert root.find(".//s:gDtipDE/s:gTransp", NS) is not None
+        assert gcam_nre.findtext("s:dKmR", default="", namespaces=NS) == "0"
+        assert gcam_nre.findtext("s:dFecEm", default="", namespaces=NS) == "2026-03-01"
+
+        tags = [el.tag.split("}")[-1] for el in list(gcam_nre)]
+        assert "dKmR" in tags
+        assert "dFecEm" in tags
+        assert tags.index("dKmR") < tags.index("dFecEm")
+
+        gtransp = root.find(".//s:gDtipDE/s:gTransp", NS)
+        assert gtransp is not None
+        assert gtransp.findtext("s:gCamTrans/s:cNacTrans", default="", namespaces=NS) == "PRY"
+        assert gtransp.findtext("s:gVehTras/s:dNroMatVeh", default="", namespaces=NS) == "AAET366"

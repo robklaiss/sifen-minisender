@@ -301,4 +301,4 @@ def test_nre_new_invoice_builds_transporte(app_ctx):
         gtransp = root.find(".//s:gDtipDE/s:gTransp", NS)
         assert gtransp is not None
         assert gtransp.findtext("s:gCamTrans/s:cNacTrans", default="", namespaces=NS) == "PRY"
-        assert gtransp.findtext("s:gVehTras/s:dNroMatVeh", default="", namespaces=NS) == "AAET366"
+        assert gtransp.findtext("s:gVehTras/s:dNroIDVeh", default="", namespaces=NS) == "AAET 366"

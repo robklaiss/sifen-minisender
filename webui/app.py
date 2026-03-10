@@ -5953,6 +5953,8 @@ def invoice_new():
         "nre_trans_tipo": _form_value("nre_trans_tipo", ""),
         "nre_trans_modalidad": _form_value("nre_trans_modalidad", "1"),
         "nre_trans_resp_flete": _form_value("nre_trans_resp_flete", "1"),
+        "nre_trans_ini": _form_value("nre_trans_ini", ""),
+        "nre_trans_fin": _form_value("nre_trans_fin", ""),
         "nre_sal_direccion": _form_value("nre_sal_direccion", ""),
         "nre_sal_num_casa": _form_value("nre_sal_num_casa", ""),
         "nre_sal_departamento": _form_value("nre_sal_departamento", default_nre_dep),
@@ -6270,6 +6272,14 @@ def invoice_new():
                             <option value="{{code}}" {% if form.get("nre_trans_resp_flete") == code %}selected{% endif %}>{{label}}</option>
                           {% endfor %}
                         </select>
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Inicio traslado</label>
+                        <input class="form-control" type="date" name="nre_trans_ini" data-nre-required="1" value="{{ form.get('nre_trans_ini') }}">
+                      </div>
+                      <div class="col-md-2">
+                        <label class="form-label">Fin traslado</label>
+                        <input class="form-control" type="date" name="nre_trans_fin" value="{{ form.get('nre_trans_fin') }}">
                       </div>
                       <div class="col-md-4">
                         <label class="form-label">Tipo transporte</label>
@@ -7119,6 +7129,8 @@ def invoice_new():
             transporte = {
                 "modalidad": (request.form.get("nre_trans_modalidad") or "").strip(),
                 "tipoResponsable": (request.form.get("nre_trans_resp_flete") or "").strip(),
+                "iniFechaEstimadaTrans": (request.form.get("nre_trans_ini") or "").strip(),
+                "finFechaEstimadaTrans": (request.form.get("nre_trans_fin") or "").strip(),
                 "salida": {
                     "direccion": _clean_text(request.form.get("nre_sal_direccion")),
                     "numCasa": _clean_digits(request.form.get("nre_sal_num_casa")),

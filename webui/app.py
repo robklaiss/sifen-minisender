@@ -1608,6 +1608,21 @@ def _normalize_country_code(value: Optional[str]) -> str:
         return compact
     return raw.upper()
 
+def _normalize_country_desc(value: Optional[str]) -> str:
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return ""
+    compact = re.sub(r"[^A-Z]", "", raw.upper())
+    aliases = {
+        "PARAGUAYA": "Paraguay",
+        "PARAGUAY": "Paraguay",
+        "PY": "Paraguay",
+        "PRY": "Paraguay",
+    }
+    if compact in aliases:
+        return aliases[compact]
+    return raw
+
 
 def _normalize_vehicle_plate(value: Optional[str]) -> str:
     raw = str(value).strip() if value is not None else ""
@@ -1782,7 +1797,7 @@ def _build_gtransp_from_extra(gdtip: ET.Element, ns_uri: str, transporte_dict: d
         c_nac = _normalize_country_code(trans.get("cNacTrans") or trans.get("nacionalidad"))
         if c_nac:
             _ensure_child_ns(gcamtrans, "cNacTrans", ns_uri).text = c_nac
-            d_des_nac = _s(trans.get("dDesNacTrans") or trans.get("nacionalidad"))
+            d_des_nac = _normalize_country_desc(trans.get("dDesNacTrans") or trans.get("nacionalidad") or c_nac)
             _set_opt(gcamtrans, "dDesNacTrans", d_des_nac)
 
         _ensure_child_ns(gcamtrans, "dNumIDChof", ns_uri).text = num_ch

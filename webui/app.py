@@ -1782,7 +1782,8 @@ def _build_gtransp_from_extra(gdtip: ET.Element, ns_uri: str, transporte_dict: d
         c_nac = _normalize_country_code(trans.get("cNacTrans") or trans.get("nacionalidad"))
         if c_nac:
             _ensure_child_ns(gcamtrans, "cNacTrans", ns_uri).text = c_nac
-            _set_opt(gcamtrans, "dDesNacTrans", _s(trans.get("dDesNacTrans")))
+            d_des_nac = _s(trans.get("dDesNacTrans") or trans.get("nacionalidad"))
+            _set_opt(gcamtrans, "dDesNacTrans", d_des_nac)
 
         _ensure_child_ns(gcamtrans, "dNumIDChof", ns_uri).text = num_ch
         _ensure_child_ns(gcamtrans, "dNomChof", ns_uri).text = nom_ch

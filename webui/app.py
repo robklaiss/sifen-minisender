@@ -1730,9 +1730,9 @@ def _build_gtransp_from_extra(gdtip: ET.Element, ns_uri: str, transporte_dict: d
     _ensure_child_ns(gveh, "dMarVeh", ns_uri).text = veh_marca
     _ensure_child_ns(gveh, "dTipIdenVeh", ns_uri).text = veh_doc_tipo
     if veh_doc_tipo == "1":
-        _ensure_child_ns(gveh, "dNroMatVeh", ns_uri).text = _normalize_vehicle_plate(veh_num)
-    else:
         _ensure_child_ns(gveh, "dNroIDVeh", ns_uri).text = veh_num
+    else:
+        _ensure_child_ns(gveh, "dNroMatVeh", ns_uri).text = _normalize_vehicle_plate(veh_num)
     _set_opt(gveh, "dAdicVeh", _s(veh.get("adic")))
     _set_opt(gveh, "dNroVuelo", _s(veh.get("numeroVuelo")))
 
